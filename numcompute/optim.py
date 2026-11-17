@@ -99,7 +99,14 @@ def gradient(f, x, h=1e-5, method="central"):
     -----
     The result is an approximation to the true gradient. Its accuracy
     depends on the step size, floating-point precision, and behavior
-    of f near x.
+    of f near x. Truncation error is O(h^2) for central and O(h) for
+    forward differences.
+
+    Time complexity: O(d * C_f) for d = x.size and C_f the cost of one
+    call to f: 2d calls (central) or d + 1 calls (forward).
+    Space complexity: O(d).
+
+    ``grad`` is an alias with the same signature.
     """
     x = _validate_inputs(f, x, h, method)
     g = np.zeros_like(x)
@@ -188,6 +195,10 @@ def jacobian(F, x, h=1e-5, method="central"):
     -----
     The Jacobian is a numerical approximation. Its accuracy depends on
     the step size, floating-point precision, and behavior of F near x.
+
+    Time complexity: O(d * C_F) for d = x.size and C_F the cost of one
+    call to F: 2d + 1 calls (central) or d + 1 calls (forward).
+    Space complexity: O(m * d) for m = F(x).size.
     """
     x = _validate_inputs(F, x, h, method)
 
@@ -263,18 +274,23 @@ def gradient_batched(f, x, h=1e-5, method="central"):
 
     Raises
     ------
+    TypeError
+        If f is not callable or h is not a real number.
     ValueError
-        If method is invalid or the function outputs cannot be reshaped
-        to the expected batch dimensions.
+        If method is invalid, h is not positive and finite, x is empty or
+        non-finite, the outputs cannot be reshaped to n values, or f
+        returns non-finite values.
 
     Notes
     -----
-    This implementation does not use _validate_inputs. Input validation,
-    output finiteness, and step-size validation are therefore not
-    guaranteed by this function.
-    """   
-    
-    x = np.asarray(x, dtype=float)
+    Same validation as ``gradient``. Exactly two calls to f are made
+    (central: the plus and minus batches; forward: the plus batch and
+    the base point), so Python-call overhead is O(1) instead of O(d).
+
+    Time complexity: O(d * C_f) arithmetic, with O(1) Python calls.
+    Space complexity: O(d^2) for the batch of perturbed inputs.
+    """
+    x = _validate_inputs(f, x, h, method)
     shape = x.shape
     x_flat = x.ravel()
     n = x_flat.size
@@ -287,13 +303,13 @@ def gradient_batched(f, x, h=1e-5, method="central"):
         g = (np.asarray(f(X_plus)).reshape(n)
              - np.asarray(f(X_minus)).reshape(n)) / (2 * h)
 
-    elif method == "forward":
+    else:  # forward (method already validated)
         f_plus = np.asarray(f(X_plus)).reshape(n)
         f_x = np.asarray(f(x.reshape((1,) + shape))).reshape(1)[0]
         g = (f_plus - f_x) / h
 
-    else:
-        raise ValueError("method must be 'central' or 'forward'")
+    if not np.all(np.isfinite(g)):
+        raise ValueError("f must return finite values")
 
     return g.reshape(shape)
 
@@ -331,13 +347,21 @@ def jacobian_batched(F, x, h=1e-5, method="central"):
 
     Raises
     ------
+    TypeError
+        If F is not callable or h is not a real number.
     ValueError
-        If method is invalid or the function outputs cannot be reshaped
-        to the expected batch dimensions.
+        If method is invalid, h is not positive and finite, x is empty or
+        non-finite, the outputs cannot be reshaped to the batch
+        dimensions, or F returns non-finite values.
 
+    Notes
+    -----
+    Same validation as ``jacobian``, with O(1) Python calls to F.
+
+    Time complexity: O(d * C_F) arithmetic.
+    Space complexity: O(d^2 + m * d) for the input batch and outputs.
     """
-    
-    x = np.asarray(x, dtype=float)
+    x = _validate_inputs(F, x, h, method)
     shape = x.shape
     x_flat = x.ravel()
     n = x_flat.size
@@ -351,12 +375,23 @@ def jacobian_batched(F, x, h=1e-5, method="central"):
         F_minus = np.asarray(F(X_minus)).reshape(n, -1)
         J = ((F_plus - F_minus) / (2 * h)).T
 
-    elif method == "forward":
+    else:  # forward (method already validated)
         F_plus = np.asarray(F(X_plus)).reshape(n, -1)
         F_x = np.asarray(F(x.reshape((1,) + shape))).reshape(1, -1)
         J = ((F_plus - F_x) / h).T
 
-    else:
-        raise ValueError("method must be 'central' or 'forward'")
+    if not np.all(np.isfinite(J)):
+        raise ValueError("F must return finite values")
 
     return J
+
+# Name used in the assignment specification.
+grad = gradient
+
+__all__ = [
+    "gradient",
+    "grad",
+    "jacobian",
+    "gradient_batched",
+    "jacobian_batched",
+]

@@ -35,22 +35,22 @@ All functionality is implemented from scratch without external ML libraries.
 ### Purpose
 Provides simple CSV loading utilities using NumPy.
 
-### Key Function
+### Key Functions
 ```python
-read_csv(path, delimiter=",", missing_value=np.nan, dtype=float)
-
+read_csv(path, delimiter=",", missing_value=np.nan, dtype=float,
+         missing="fill", skip_header=0)
+read_csv_chunks(path, chunk_size=1000, ...)   # same options, yields chunks
 ```
 ### Behaviour
-Loads CSV files into NumPy arrays
-Supports custom delimiters
-Converts data types
-Fills missing values
-Raises FileNotFoundError if the file does not exist (expected behaviour)
+- Loads CSV files into 2D NumPy arrays, even for a single row or column.
+- Supports custom delimiters (`","`, `"\t"`, or `None` for whitespace) and dtype conversion.
+- Missing values: `missing="fill"` uses `missing_value`; `missing="skip"` drops affected rows.
+- `read_csv_chunks` is a lazy generator, so memory use depends on `chunk_size` rather than file size. `np.vstack` of all chunks equals `read_csv`.
+- Raises `FileNotFoundError` for a missing file, and `ValueError` for unknown options or inconsistent column counts.
 
 ### Design Notes
-Thin wrapper around numpy.genfromtxt
-Keeps implementation simple and predictable
-Allows unit tests to validate missing‑file behaviour
+- Both functions share one parsing helper around `numpy.genfromtxt`.
+- Streaming is the one place a Python loop is necessary: lines are read one at a time and parsed in vectorised blocks of `chunk_size`.
 
 ## 2.2 preprocessing.py — Scaling & Encoding
 
@@ -79,9 +79,11 @@ scaler.fit(X)
 X_scaled = scaler.transform(X)
 
 ### Design Notes
-Pure NumPy implementation
-Ensures consistent shapes and dtype
-Avoids Python loops
+- Pure NumPy implementation; all three share a `_Transformer` base class and the `utils.validate_2d` / `utils.check_is_fitted` helpers.
+- `fit` records `n_features_in_`; `transform` rejects a different column count with `ValueError` instead of broadcasting silently.
+- `transform` before `fit` raises `NotFittedError` (a `RuntimeError` and `AttributeError` subclass).
+- Constant features: the zero standard deviation or range is replaced by 1 (`scale_`), so outputs stay finite. `StandardScaler` maps such a column to 0 and `MinMaxScaler` to `feature_range[0]`.
+- Scalers reject NaN, infinity, non-numeric, 1D and empty input. `OneHotEncoder` rejects unseen categories unless `handle_unknown="ignore"`.
 
 ## 2.3 sort_search.py — Sorting, Searching, Top‑K
 
@@ -91,8 +93,8 @@ Implements efficient sorting and searching algorithms.
 ### Features
 Stable sort
 Multi‑key sort
-Top‑K using numpy.argpartition
-Quickselect
+Top‑K (`top_k`, alias `topk`) using `np.argpartition`
+Explicit, educational quickselect (no `np.partition`)
 Binary search
 
 ### Example
@@ -100,29 +102,35 @@ Binary search
 top_values = top_k(arr, k=5)
 
 ### Design Notes
-Uses vectorised NumPy operations
-Deterministic behaviour
-Avoids Python loops for performance
+- `_quickselect` is an iterative Hoare FIND. Each round picks a random pivot (fixed seed, so results are reproducible), splits the candidates into better, equal and worse groups, and keeps only the group that contains the target rank. Expected O(n), worst case O(n²).
+- The candidate index array stays in increasing order, so the answer inside the equal group is at offset `k - n_better`. This reproduces stable tie order (lower index first).
+- `top_k` uses `np.argpartition` (as the specification requires) to find the boundary value. It then takes every strictly better element plus the lowest-index ties needed to make k, and sorts only those k items: O(n + k log k).
+- Shared contract: 1D ndarray, NaN rejected, ties broken by lowest index, `top_k` results best-first, and `quick_select(v, r) == top_k(v, r + 1)[-1]`.
 
 ## 2.4 rank.py — Ranking & Percentiles
 ### Purpose
 Implements ranking utilities similar to SciPy’s rankdata.
 
 ### Features
-Average ranking
-Dense ranking
-Ordinal ranking
-Percentile computation
+Average, dense, ordinal, min and max ranking (`rankdata`, alias `rank`)
+`percentile(data, q, interpolation='linear'|'lower'|'higher'|'midpoint'|'nearest')`
+Percentile rank of scores
 Tie handling
 
 ### Example
 
-ranks = rankdata(arr, method="average")
+ranks = rank(arr, method="average")
+p90 = percentile(arr, 90, interpolation="midpoint")
+
+### Percentile algorithm
+- Sort along the axis once (NaN sorts to the end), then count the valid values `n` in each slice.
+- Compute `pos = q/100 * (n - 1)` for every `q` and slice at once, take `i = floor(pos)` and `j = ceil(pos)`, and gather both with `take_along_axis`. The interpolation rule then combines `s[i]` and `s[j]`.
+- Because `n` is per slice, `nan_policy="omit"` stays fully vectorised even when slices have different numbers of NaNs. Results are verified against `np.percentile` and `np.nanpercentile`.
 
 ### Design Notes
-Uses sorting + index mapping
-Ensures stable tie resolution
-Supports multiple ranking strategies
+- One stable argsort per slice, then fully vectorised tie-group assignment. Group starts are marked where sorted values change; `cumsum` gives each position a group id, and each method's rank (average, min, max, dense, ordinal) is computed per group with array arithmetic and scattered back through the sort order. There is no Python loop over groups.
+- Descending order reverses whole groups, so tied values keep their original order.
+- O(n log n) time, O(n) space per ranked slice.
 
 ## 2.5 stats.py — Statistics
 ### Purpose
@@ -212,11 +220,18 @@ Implements a simple pipeline system similar to scikit‑learn.
 - Provides helper functions used across modules.
 
 ### Includes
-- Distance functions
-- Activation functions
-- Logsumexp
-Batching utilities
-- Top‑K helpers
+- Activation functions: `sigmoid`, `relu`, `leaky_relu`, `tanh`, `softmax`, `log_softmax`
+- `logsumexp`
+- Distance functions: `euclidean_distance`, `manhattan_distance`, `cosine_distance`, `pairwise_distances`
+- Batching: `batch_iterator`
+- Shared validation: `validate_array`, `validate_2d`, `check_is_fitted`, `validate_int`, `validate_bool`, `NotFittedError`, `safe_divide`
+
+### Numerical stability
+- `sigmoid` uses `1/(1+e^{-x})` for `x >= 0` and `e^x/(1+e^x)` for `x < 0`, so `exp` never sees a large positive argument.
+- `logsumexp` shifts by the maximum: `m + log(sum(exp(x - m)))`. An infinite maximum is not subtracted, which would give inf − inf = NaN, so all `-inf` gives `-inf` and any `+inf` gives `+inf`.
+- `softmax` and `log_softmax` are built on `logsumexp`, so logits of 1000 or more give finite probabilities.
+- Pairwise Euclidean distances use `||x||² + ||y||² − 2x·y` and clip small negative rounding errors to 0 before the square root.
+- The tests treat NumPy `RuntimeWarning`s as errors, which proves that no overflow happens rather than being silently tolerated.
 
 ### Design Notes
 - Centralised utility functions
@@ -240,22 +255,46 @@ benchmark(python_loop, numpy_sum, data)
 - Demonstrates efficiency gains
 - Helps students understand vectorisation benefits
 
-# 3. Testing Strategy
-## Goals
-- ≥ 20 tests required
-- Team target: 30+ tests
-- Cover edge cases
-- Validate shapes, types, numerical correctness
+# 3. Testing
+## Approach
+- Specification-based tests: each documented contract (shapes, exceptions, constant features, use before fit, tie-breaking) has a test that checks it directly.
+- Reference-implementation tests: `top_k`/`quick_select` are compared with a stable-sort reference, and `rankdata` with an O(n²) reference, on hundreds of randomised arrays with heavy ties.
+- Benchmark tests: loop and NumPy versions agree, `measure_time` performs one warm-up plus `repeats` runs, result dictionaries have the expected fields, and invalid sizes are rejected.
 
 ## Tools
-- pytest
+- pytest (with `parametrize`, `monkeypatch`, `capsys`)
 - sample CSV files
-- synthetic NumPy arrays
+- synthetic NumPy arrays with fixed random seeds
 
-## Coverage
-- io.py → 3 tests
-- preprocessing.py → 9 tests
-- Remaining modules → added by team
+## Actual results
+Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **441 passed, 0 failed**.
+
+| Area | Test files | Tests |
+|---|---|---:|
+| Sorting, searching, selection | `test_sort_search.py`, `test_selection_contract.py` | 72 |
+| Ranking and percentiles | `test_rank.py`, `test_rank_vectorised.py`, `test_percentile.py` | 65 |
+| Utilities | `test_utils.py`, `test_utils_numerics.py` | 61 |
+| Preprocessing | `test_preprocessing.py`, `test_preprocessing_boundaries.py` | 53 |
+| Cross-module contracts | `test_contracts.py` | 34 |
+| I/O | `test_io.py`, `test_io_chunks.py` | 21 |
+| Benchmarking | `test_benchmarking.py` | 21 |
+| Statistics and batched optimisation contracts | `test_stats_optim_contracts.py` | 64 |
+| Optimisation | `test_optim.py` | 15 |
+| Metrics | `test_metrics.py` | 12 |
+| Pipeline | `test_pipeline.py` | 12 |
+| Statistics | `test_stats.py` | 11 |
+
+## Corrections driven by testing
+- Constant columns produced NaN in both scalers → divisor of 1 for zero spread.
+- A `(n, 1)` input broadcast silently against a fitted multi-feature scaler → explicit `n_features_in_` check.
+- `transform` before `fit` failed with an unhelpful `AttributeError` → `NotFittedError`.
+- `quick_select` delegated to `np.partition` and broke ties inconsistently → explicit quickselect with a stable tie rule.
+- `benchmark_mean` validated `size` only after generating data → validated first.
+- `from numcompute import ...` (as used in this README) failed because `__init__.py` was empty → public API re-exported.
+- Missing specified APIs (activations, distances, logsumexp, batching, chunked CSV input, `percentile` interpolation, `rank`/`topk`/`grad` names) → implemented and tested.
+- `histogram(..., ignore_nan=False)` silently ignored the flag and dropped NaN → now raises `ValueError`.
+- `gradient_batched`/`jacobian_batched` skipped all input validation → now share `gradient`/`jacobian` validation.
+- `percentile([inf, inf], 50)` returned NaN because inf − inf = NaN in linear interpolation → returns the shared endpoint when both neighbours are equal.
 
 # 4. Benchmarking Strategy
 ## Compare

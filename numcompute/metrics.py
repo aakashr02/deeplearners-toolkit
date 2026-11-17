@@ -1,5 +1,33 @@
 import numpy as np
 
+
+def _validate_pair(y_true, y_pred, numeric=False):
+    """
+    Shared input contract for every metric.
+
+    Both inputs are converted with ``np.asarray`` (float64 when
+    ``numeric`` is True), must have identical shapes and must not be
+    empty. Labels may be of any comparable dtype when ``numeric`` is
+    False.
+
+    Raises
+    ------
+    ValueError
+        If shapes differ or the inputs are empty.
+    """
+    dtype = float if numeric else None
+    y_true = np.asarray(y_true, dtype=dtype)
+    y_pred = np.asarray(y_pred, dtype=dtype)
+
+    if y_true.shape != y_pred.shape:
+        raise ValueError("y_true and y_pred must have the same shape")
+
+    if y_true.size == 0:
+        raise ValueError("Input arrays cannot be empty")
+
+    return y_true, y_pred
+
+
 def accuracy(y_true, y_pred):
     """
     Calculate the accuracy of predictions.
@@ -27,16 +55,8 @@ def accuracy(y_true, y_pred):
     Time complexity: O(n)
     Space complexity: O(1)
     """
-    y_true = np.asarray(y_true)
-    y_pred = np.asarray(y_pred)
-    
-    if y_true.shape != y_pred.shape:
-        raise ValueError("Shapes of true and predicted labels must match.")
-    
-    if y_true.size == 0:
-        raise ValueError("Input arrays must not be empty.")
-    
-    return np.mean(y_true == y_pred)
+    y_true, y_pred = _validate_pair(y_true, y_pred)
+    return float(np.mean(y_true == y_pred))
 
 def confusion_matrix(y_true, y_pred, labels=None):
     """
@@ -69,21 +89,14 @@ def confusion_matrix(y_true, y_pred, labels=None):
     Time complexity: O(n * c), where c is the number of classes.
     Space complexity: O(c^2).
     """
-    y_true = np.asarray(y_true)
-    y_pred = np.asarray(y_pred)
-
-    if y_true.shape != y_pred.shape:
-        raise ValueError("y_true and y_pred must have the same shape")
-
-    if y_true.size == 0:
-        raise ValueError("Input arrays cannot be empty")
+    y_true, y_pred = _validate_pair(y_true, y_pred)
 
     if labels is None:
-        labels = np.unique(np.concatenate((y_true, y_pred)))
+        labels = np.unique(np.concatenate((y_true.ravel(), y_pred.ravel())))
     else:
         labels = np.asarray(labels)
 
-    matrix = np.zeros((len(labels), len(labels)), dtype=int)
+    y_true, y_pred = y_true.ravel(), y_pred.ravel()
 
     # Vectorised counting for each true/predicted label combination
     true_matches = y_true[:, None] == labels
@@ -124,14 +137,7 @@ def precision(y_true, y_pred, positive_label=1):
     Time complexity: O(n)
     Space complexity: O(n)
     """
-    y_true = np.asarray(y_true)
-    y_pred = np.asarray(y_pred)
-
-    if y_true.shape != y_pred.shape:
-        raise ValueError("y_true and y_pred must have the same shape")
-
-    if y_true.size == 0:
-        raise ValueError("Input arrays cannot be empty")
+    y_true, y_pred = _validate_pair(y_true, y_pred)
 
     true_positive = np.sum(
         (y_true == positive_label) & (y_pred == positive_label)
@@ -146,7 +152,7 @@ def precision(y_true, y_pred, positive_label=1):
     if denominator == 0:
         return 0.0
 
-    return true_positive / denominator
+    return float(true_positive / denominator)
 
 
 def recall(y_true, y_pred, positive_label=1):
@@ -180,14 +186,7 @@ def recall(y_true, y_pred, positive_label=1):
     Time complexity: O(n)
     Space complexity: O(n)
     """
-    y_true = np.asarray(y_true)
-    y_pred = np.asarray(y_pred)
-
-    if y_true.shape != y_pred.shape:
-        raise ValueError("y_true and y_pred must have the same shape")
-
-    if y_true.size == 0:
-        raise ValueError("Input arrays cannot be empty")
+    y_true, y_pred = _validate_pair(y_true, y_pred)
 
     true_positive = np.sum(
         (y_true == positive_label) & (y_pred == positive_label)
@@ -202,7 +201,7 @@ def recall(y_true, y_pred, positive_label=1):
     if denominator == 0:
         return 0.0
 
-    return true_positive / denominator
+    return float(true_positive / denominator)
 
 
 def f1(y_true, y_pred, positive_label=1):
@@ -223,7 +222,12 @@ def f1(y_true, y_pred, positive_label=1):
     Returns
     -------
     float
-        F1 score.
+        F1 score. Returns 0.0 when precision and recall are both 0.
+
+    Raises
+    ------
+    ValueError
+        If input shapes differ or inputs are empty.
 
     Notes
     -----
@@ -236,7 +240,7 @@ def f1(y_true, y_pred, positive_label=1):
     if p + r == 0:
         return 0.0
 
-    return 2 * p * r / (p + r)
+    return float(2 * p * r / (p + r))
 
 def mse(y_true, y_pred):
     """
@@ -265,13 +269,15 @@ def mse(y_true, y_pred):
     Time complexity: O(n)
     Space complexity: O(n)
     """
-    y_true = np.asarray(y_true, dtype=float)
-    y_pred = np.asarray(y_pred, dtype=float)
+    y_true, y_pred = _validate_pair(y_true, y_pred, numeric=True)
+    return float(np.mean((y_true - y_pred) ** 2))
 
-    if y_true.shape != y_pred.shape:
-        raise ValueError("y_true and y_pred must have the same shape")
 
-    if y_true.size == 0:
-        raise ValueError("Input arrays cannot be empty")
-
-    return np.mean((y_true - y_pred) ** 2)
+__all__ = [
+    "accuracy",
+    "confusion_matrix",
+    "precision",
+    "recall",
+    "f1",
+    "mse",
+]

@@ -15,20 +15,22 @@ The package is designed to offer useful numerical and data-processing operations
 - **Evaluation metrics:** Accuracy, confusion matrix, precision, recall, F1 score, and mean squared error.
 - **Preprocessing:** Standard scaling, min-max scaling, and one-hot encoding.
 - **Pipelines:** Sequential preprocessing and optional final estimator integration.
-- **Input/output:** CSV loading into NumPy arrays.
+- **Input/output:** CSV loading into NumPy arrays, including chunked streaming and skip/fill handling of missing values.
+- **Utilities:** Numerically stable activations (sigmoid, softmax, log-softmax, logsumexp), distance functions and mini-batching.
+- **Percentiles:** `percentile()` with linear, lower, higher, midpoint and nearest interpolation.
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.10 or later
+- Python 3.9 or later
 - Git
 - NumPy
 
 ### Install directly from Git
 
 ```bash
-python -m pip install "https://github.com/Sammie1875/deeplearners-toolkit.git"
+python -m pip install "git+https://github.com/Sammie1875/deeplearners-toolkit.git"
 ```
 
 
@@ -148,7 +150,18 @@ The pipeline supports preprocessing components that implement `fit()` and `trans
 
 | Function | Description |
 |---|---|
-| `read_csv(path, delimiter=",", missing_value=np.nan, dtype=float)` | Loads CSV data into a NumPy array using NumPy's `genfromtxt`. |
+| `read_csv(path, delimiter=",", missing_value=np.nan, dtype=float, missing="fill", skip_header=0)` | Loads a CSV file into a 2D array using NumPy's `genfromtxt`. |
+| `read_csv_chunks(path, chunk_size=1000, ...)` | Streams the file lazily as 2D chunks of at most `chunk_size` rows; same options as `read_csv`. |
+
+`missing="fill"` replaces empty fields with `missing_value`, and `missing="skip"` drops rows that contain them. Stacking all chunks with `np.vstack` reproduces `read_csv` exactly.
+
+```python
+from numcompute import read_csv_chunks
+
+total = 0.0
+for chunk in read_csv_chunks("large.csv", chunk_size=10_000, missing="skip"):
+    total += chunk.sum()          # only one chunk is in memory at a time
+```
 
 ### 2. `sort_search.py` — Sorting and searching
 
@@ -157,16 +170,22 @@ The pipeline supports preprocessing components that implement `fit()` and `trans
 | `stable_sort(values, axis=-1)` | Sorts array elements along a specified axis. |
 | `multi_key_sort(data, ascending=True)` | Returns indices that order rows using multiple keys. |
 | `binary_search(sorted_array, x)` | Returns the insertion index and whether the target exists. |
-| `top_k(values, k, largest=True, return_indices=True)` | Selects the \(k\) largest or smallest elements or their indices. |
-| `quick_select(values, k, largest=True, return_index=True)` | Selects an element by rank without fully sorting the input. |
+| `top_k(values, k, largest=True, return_indices=True)` (alias `topk`) | Selects the \(k\) largest or smallest elements or their indices using `np.argpartition`, ordered best-first. |
+| `quick_select(values, k, largest=True, return_index=True)` | Selects the element at zero-based rank \(k\) with an explicit, educational quickselect (random pivot, three-way partition); never calls `np.partition`. |
 
-Check each function's docstring for index conventions and output ordering.
+**Selection contract** (shared by `top_k` and `quick_select`):
+
+- Input must be a 1D `np.ndarray` without NaN (`ValueError` otherwise); infinities are allowed.
+- Ties are broken by the lower original index, so results are deterministic.
+- `top_k` returns a length-\(k\) array, best-first (descending for `largest=True`); `quick_select` returns a Python `int` index or a value of the input dtype.
+- `quick_select(values, r) == top_k(values, r + 1)[-1]` for every valid rank.
+- Non-integer or Boolean `k` raises `TypeError`; out-of-range `k` raises `ValueError`.
 
 ### 3. `optim.py` — Numerical differentiation
 
 | Function | Description |
 |---|---|
-| `gradient(f, x, h=1e-5, method="central")` | Estimates the gradient of a scalar-valued function. |
+| `gradient(f, x, h=1e-5, method="central")` (alias `grad`) | Estimates the gradient of a scalar-valued function. |
 | `jacobian(F, x, h=1e-5, method="central")` | Estimates the Jacobian of a vector-valued function. |
 | `gradient_batched(f, x, h=1e-5, method="central")` | Estimates gradients using batched function evaluations. |
 | `jacobian_batched(F, x, h=1e-5, method="central")` | Estimates Jacobians using batched function evaluations. |
@@ -189,8 +208,19 @@ Supported finite-difference methods are central and forward differences.
 
 | Function | Description |
 |---|---|
-| `rankdata(values, method="average", ascending=True, axis=None, nan_policy="raise")` | Computes observation ranks. |
+| `rankdata(values, method="average", ascending=True, axis=None, nan_policy="raise")` (alias `rank`) | Computes observation ranks. |
+| `percentile(data, q, interpolation="linear", axis=None, nan_policy="raise")` | Computes the q-th percentile(s), \(q \in [0, 100]\), with `linear`, `lower`, `higher`, `midpoint` or `nearest` interpolation. |
 | `percentile_rank(values, score, kind="rank", nan_policy="raise")` | Calculates the percentile rank of one or more scores. |
+
+`percentile` sorts each slice once and gathers every requested percentile in one vectorised step. Its results match `np.percentile(..., method=...)`, and with `nan_policy="omit"` they match `np.nanpercentile`. A scalar `q` returns a float when `axis=None`. An array `q` returns shape `q.shape + reduced_shape`.
+
+```python
+from numcompute import percentile
+
+percentile([1, 2, 3, 4], 50)                          # 2.5
+percentile([1, 2, 3, 4], 50, interpolation="lower")   # 2.0
+percentile([1, 2, 3, 4], 50, interpolation="higher")  # 3.0
+```
 
 Supported ranking methods are `average`, `dense`, `ordinal`, `min`, and `max`. NaN policies are `raise`, `omit`, and `propagate`.
 
@@ -214,12 +244,35 @@ Precision, recall, and F1 use a specified positive class and are intended for bi
 | Class | Methods | Description |
 |---|---|---|
 | `StandardScaler` | `fit`, `transform`, `fit_transform` | Centers features and scales by standard deviation. |
-| `MinMaxScaler` | `fit`, `transform`, `fit_transform` | Scales features to a specified range. |
-| `OneHotEncoder` | `fit`, `transform`, `fit_transform` | Encodes categorical columns as binary features. |
+| `MinMaxScaler(feature_range=(0, 1))` | `fit`, `transform`, `fit_transform` | Scales features to a specified range. |
+| `OneHotEncoder(handle_unknown="error")` | `fit`, `transform`, `fit_transform` | Encodes categorical columns as binary features. |
 
 Fit preprocessing components on training data and reuse the fitted components to transform new data.
 
-### 8. `pipeline.py` — Pipeline composition
+**Transformer contract** (shared validation lives in `utils.py`):
+
+- `X` must be 2D with shape `(n_samples, n_features)` and at least one sample. Scalers also require real, finite numbers (`TypeError` / `ValueError`).
+- `fit` records `n_features_in_` and returns `self`. `transform` raises `ValueError` if `X` has a different number of columns, instead of silently broadcasting.
+- Calling `transform` before `fit` raises `numcompute.NotFittedError`, which subclasses both `RuntimeError` and `AttributeError`.
+- Constant features are safe: the zero standard deviation or range is replaced by 1 in `scale_`. A constant column becomes 0 with `StandardScaler` and `feature_range[0]` with `MinMaxScaler`, never NaN.
+- `OneHotEncoder` raises `ValueError` for categories not seen during `fit`, unless `handle_unknown="ignore"` (encoded as all zeros).
+
+### 8. `utils.py` — Activations, distances, batching and validation
+
+| Function | Description |
+|---|---|
+| `sigmoid(x)` | Logistic function; branch-wise form never overflows (`sigmoid(±1000)` gives exactly 1 / 0). |
+| `relu(x)`, `leaky_relu(x, alpha=0.01)`, `tanh(x)` | Elementwise activations, same shape as input. |
+| `softmax(x, axis=-1)`, `log_softmax(x, axis=-1)` | Max-shifted, so logits of 1000+ are safe; `-inf` logits get probability 0. |
+| `logsumexp(x, axis=None, keepdims=False)` | `m + log(sum(exp(x - m)))`; handles `±inf` and NaN explicitly. |
+| `euclidean_distance(a, b)`, `manhattan_distance(a, b)`, `cosine_distance(a, b)` | Distances along the last axis, with broadcasting over leading axes. |
+| `pairwise_distances(X, Y=None, metric="euclidean")` | `(n, m)` distance matrix; Euclidean uses one matrix product and clips rounding error. |
+| `batch_iterator(*arrays, batch_size, shuffle=False, seed=None, drop_last=False)` | Yields aligned mini-batches (views when not shuffled). |
+| `validate_2d`, `check_is_fitted`, `validate_int`, `validate_bool`, `NotFittedError` | Shared validation used by every module. |
+
+All activations accept non-contiguous views, return float64, and raise `TypeError` for non-numeric input.
+
+### 9. `pipeline.py` — Pipeline composition
 
 | Class or method | Description |
 |---|---|
@@ -249,10 +302,10 @@ Let:
 | `stable_sort()` | \(O(n\log n)\) typical | \(O(n)\) typical |
 | `multi_key_sort()` | \(O(n\log n)\) | \(O(n)\) |
 | `binary_search()` | \(O(\log n)\) | \(O(1)\) |
-| `top_k()` | Typically \(O(n)\) | \(O(n)\) if indices are returned; otherwise implementation-dependent |
-| `quick_select()` | Typically \(O(n)\) | \(O(n)\) if indices are returned; otherwise implementation-dependent |
+| `top_k()` | \(O(n + k\log k)\) | \(O(n)\) |
+| `quick_select()` | Expected \(O(n)\), worst case \(O(n^2)\) | \(O(n)\) |
 
-Selection operations using partitioning typically avoid the \(O(n\log n)\) cost of a complete sort. Their precise bounds depend on the underlying implementation.
+Quickselect keeps only the partition containing the target rank, so the expected work is \(n + n/2 + n/4 + \dots = O(n)\). This avoids the \(O(n\log n)\) cost of a full sort. A random pivot from a fixed-seed generator makes the quadratic worst case vanishingly unlikely while keeping results reproducible. `top_k` uses `np.argpartition` (introselect) to find the boundary value and then sorts only the \(k\) selected items.
 
 ### Numerical differentiation
 
@@ -289,9 +342,10 @@ Axis-based operations scale with the total number of input elements. NaN-aware o
 |---|---:|---:|
 | `rankdata()` on \(n\) values | \(O(n\log n)\) | \(O(n)\) |
 | `rankdata()` on multidimensional arrays | \(O(N\log k)\) typical, where \(N\) is total elements and \(k\) is the ranked axis length | \(O(N)\) |
+| `percentile()` | \(O(N\log k + \lvert q\rvert N/k)\) | \(O(N)\) for the sorted copy |
 | `percentile_rank()` | \(O(n\log n + q\log n)\) | \(O(n+q)\) |
 
-`rankdata()` sorts each ranked slice. `percentile_rank()` sorts the reference data once and uses binary-search insertion positions for the queries.
+`rankdata()` sorts each ranked slice once and then assigns every tie group's rank with vectorised array arithmetic. It labels groups with a cumulative sum of value changes, with no Python loop over groups. `percentile_rank()` sorts the reference data once and uses binary-search insertion positions for the queries.
 
 ### Evaluation metrics
 
@@ -326,6 +380,16 @@ The exact complexity of one-hot encoding depends on the number of unique categor
 | Function | Time complexity | Auxiliary space |
 |---|---:|---:|
 | `read_csv()` | \(O(N)\) typical for \(N\) parsed input values | \(O(N)\) for the resulting array |
+| `read_csv_chunks()` | \(O(N)\) in total | \(O(\text{chunk\_size} \times C)\) per chunk |
+
+### Utilities
+
+| Function | Time complexity | Auxiliary space |
+|---|---:|---:|
+| Activations, `softmax`, `logsumexp` | \(O(n)\) | \(O(n)\) |
+| Vector distances on \(n\) rows of \(d\) features | \(O(nd)\) | \(O(nd)\) |
+| `pairwise_distances()` | \(O(nmd)\) | \(O(nm)\); \(O(nmd)\) for Manhattan |
+| `batch_iterator()` | \(O(n)\) over all batches | \(O(1)\) views, \(O(n)\) when shuffled |
 
 CSV parsing also depends on file size, data types, delimiters, and missing-value handling.
 
@@ -371,6 +435,39 @@ python -m numcompute.benchmarking
 ```
 
 The script generates reproducible input data, measures execution times and prints a comparison table.
+
+## Testing
+
+Run the full suite from the project root:
+
+```bash
+python -m pytest
+```
+
+### Test results
+
+Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **441 passed, 0 failed** (about 3 seconds).
+
+| Test file | Tests | What it verifies |
+|---|---:|---|
+| `test_sort_search.py` | 52 | Sorting, multi-key sort, binary search, top-\(k\), quickselect |
+| `test_selection_contract.py` | 20 | Selection contract vs. a stable-sort reference (ties, ordering, NaN, infinity, int64 extremes, strided views, quickselect never calls `np.partition`) |
+| `test_utils_numerics.py` | 37 | Activations at ±1000/±inf with warnings treated as errors, logsumexp/softmax stability, distances, pairwise matrices, batching |
+| `test_percentile.py` | 26 | All interpolation methods vs. `np.percentile`, NaN policies vs. `np.nanpercentile`, axes, output shapes, extreme q, infinity |
+| `test_io_chunks.py` | 20 | Fill/skip missing values, tab delimiter, 2D output, chunked streaming equals a full read, laziness, ragged rows |
+| `test_preprocessing.py` | 9 | Ordinary scaling and encoding |
+| `test_preprocessing_boundaries.py` | 44 | Constant columns, fitted feature mismatches, use before `fit`, 1D/empty/NaN/inf/non-numeric input, unknown categories |
+| `test_rank.py` | 25 | Ranking methods, NaN policies, percentile ranks |
+| `test_rank_vectorised.py` | 14 | Vectorised tie groups vs. an \(O(n^2)\) reference, all-tied and empty input |
+| `test_benchmarking.py` | 21 | Loop and NumPy results agree, `measure_time` behaviour, result fields, invalid sizes, speedup > 1 |
+| `test_contracts.py` | 34 | Shared validators, pipeline contracts, metric return types, package exports |
+| `test_utils.py` | 24 | Numeric validation, shape checks, safe division |
+| `test_optim.py` | 15 | Gradients and Jacobians |
+| `test_metrics.py` | 12 | Classification and regression metrics |
+| `test_pipeline.py` | 12 | Pipeline fit/transform/predict |
+| `test_stats.py` | 11 | Descriptive statistics |
+| `test_stats_optim_contracts.py` | 64 | Stats input contract (empty, non-numeric, axis bounds, all-NaN slices without warnings, all-equal, strided views, histogram NaN policy, quantile q range) and batched gradient/Jacobian validation |
+| `test_io.py` | 1 | CSV loading |
 
 ## Team Work Split
 

@@ -1,7 +1,23 @@
+"""
+benchmarking.py
+===============
+
+Reproducible timing of NumCompute's vectorised operations against
+equivalent pure-Python loop implementations.
+
+Every ``benchmark_*`` function first checks that the loop and vectorised
+results agree (raising AssertionError otherwise), then times both with
+``measure_time`` and returns a result dictionary with the keys
+``operation``, ``size``, ``loop_time``, ``vector_time`` (seconds) and
+``speedup`` (``loop_time / vector_time``).
+
+Run ``python -m numcompute.benchmarking`` to print the results table.
+"""
 
 import time
 import numpy as np
 
+from numcompute.utils import validate_int
 from numcompute.stats import mean
 from numcompute.metrics import mse
 from numcompute.preprocessing import StandardScaler
@@ -10,6 +26,7 @@ from numcompute.preprocessing import StandardScaler
 # Python loop versions used only for benchmarking
 
 def loop_mean(data):
+    """Arithmetic mean of a 1D sequence using a Python loop. O(n)."""
     total = 0.0
 
     for value in data:
@@ -19,6 +36,7 @@ def loop_mean(data):
 
 
 def loop_mse(y_true, y_pred):
+    """Mean squared error using a Python loop. O(n)."""
     total_error = 0.0
 
     for actual, predicted in zip(y_true, y_pred):
@@ -66,11 +84,34 @@ def loop_standard_scaler(data):
 
 def measure_time(function, repeats=5):
     """
-    Run a function repeatedly and return the median
-    execution time in seconds.
+    Return the median wall-clock time of ``function()`` in seconds.
+
+    The function is called once as an untimed warm-up, then ``repeats``
+    timed calls are made with ``time.perf_counter``.
+
+    Parameters
+    ----------
+    function : callable
+        Zero-argument callable to time.
+    repeats : int, default=5
+        Number of timed runs, at least 1.
+
+    Returns
+    -------
+    float
+        Median execution time in seconds (non-negative).
+
+    Raises
+    ------
+    TypeError
+        If function is not callable or repeats is not an integer.
+    ValueError
+        If repeats is less than 1.
     """
-    if repeats < 1:
-        raise ValueError("repeats must be at least 1")
+    if not callable(function):
+        raise TypeError("function must be callable")
+
+    repeats = validate_int(repeats, "repeats", minimum=1)
 
     times = []
 
@@ -90,11 +131,23 @@ def measure_time(function, repeats=5):
 # Benchmark 1: Mean
 
 def benchmark_mean(size=100000, repeats=5):
+    """
+    Benchmark ``stats.mean`` against ``loop_mean`` on ``size`` values.
+
+    Returns the result dictionary described in the module docstring.
+
+    Raises
+    ------
+    TypeError
+        If size or repeats is not an integer.
+    ValueError
+        If size or repeats is less than 1.
+    AssertionError
+        If the two implementations disagree.
+    """
+    size = validate_int(size, "size", minimum=1)
     rng = np.random.default_rng(42)
     data = rng.random(size)
-
-    if size < 1:
-        raise ValueError("size must be positive")
 
     expected = loop_mean(data)
     actual = mean(data)
@@ -122,8 +175,21 @@ def benchmark_mean(size=100000, repeats=5):
 # Benchmark 2: Mean Squared Error
 
 def benchmark_mse(size=100000, repeats=5):
-    if size < 1:
-        raise ValueError("size must be positive")
+    """
+    Benchmark ``metrics.mse`` against ``loop_mse`` on ``size`` pairs.
+
+    Returns the result dictionary described in the module docstring.
+
+    Raises
+    ------
+    TypeError
+        If size or repeats is not an integer.
+    ValueError
+        If size or repeats is less than 1.
+    AssertionError
+        If the two implementations disagree.
+    """
+    size = validate_int(size, "size", minimum=1)
 
     rng = np.random.default_rng(42)
 
@@ -156,8 +222,23 @@ def benchmark_mse(size=100000, repeats=5):
 # Benchmark 3: StandardScaler
 
 def benchmark_scaler(rows=10000, cols=5, repeats=5):
-    if rows < 1 or cols < 1:
-        raise ValueError("rows and cols must be positive")
+    """
+    Benchmark ``StandardScaler.fit_transform`` against
+    ``loop_standard_scaler`` on a ``(rows, cols)`` matrix.
+
+    ``size`` in the result is ``rows * cols``.
+
+    Raises
+    ------
+    TypeError
+        If rows, cols or repeats is not an integer.
+    ValueError
+        If rows, cols or repeats is less than 1.
+    AssertionError
+        If the two implementations disagree.
+    """
+    rows = validate_int(rows, "rows", minimum=1)
+    cols = validate_int(cols, "cols", minimum=1)
 
     rng = np.random.default_rng(42)
     data = rng.random((rows, cols))
@@ -193,7 +274,15 @@ def benchmark_scaler(rows=10000, cols=5, repeats=5):
 
 # Display all benchmark results
 
-def run_benchmarks():
+def run_benchmarks(size=100000, rows=10000, cols=5, repeats=5):
+    """
+    Run all benchmarks, print a results table and return the results.
+
+    Returns
+    -------
+    list of dict
+        One result dictionary per benchmark (Mean, MSE, StandardScaler).
+    """
     print("\nNUMCOMPUTE - PERFORMANCE BENCHMARKS")
     print("=" * 82)
 
@@ -208,9 +297,9 @@ def run_benchmarks():
     print("-" * 82)
 
     results = [
-        benchmark_mean(),
-        benchmark_mse(),
-        benchmark_scaler()
+        benchmark_mean(size, repeats),
+        benchmark_mse(size, repeats),
+        benchmark_scaler(rows, cols, repeats)
     ]
 
     for result in results:
@@ -227,7 +316,7 @@ def run_benchmarks():
 
     print("=" * 82)
     print("Random seed: 42")
-    print("Timing: median of 5 runs, after one warm-up")
+    print(f"Timing: median of {repeats} runs, after one warm-up")
     print("All correctness checks passed.")
 
     return results
