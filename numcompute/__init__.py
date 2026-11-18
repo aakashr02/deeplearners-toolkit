@@ -8,12 +8,22 @@ The public API of every module is re-exported here, so both
 
 from numcompute.io import read_csv, read_csv_chunks
 from numcompute.metrics import (
+    StreamingAccuracy,
+    StreamingAUC,
+    StreamingConfusionMatrix,
+    StreamingF1,
+    StreamingMSE,
+    StreamingPrecision,
+    StreamingRecall,
     accuracy,
+    auc,
     confusion_matrix,
     f1,
     mse,
     precision,
     recall,
+    roc_auc_score,
+    roc_curve,
 )
 from numcompute.optim import (
     grad,
@@ -23,7 +33,12 @@ from numcompute.optim import (
     jacobian_batched,
 )
 from numcompute.pipeline import Pipeline
-from numcompute.preprocessing import MinMaxScaler, OneHotEncoder, StandardScaler
+from numcompute.preprocessing import (
+    MinMaxScaler,
+    OneHotEncoder,
+    SimpleImputer,
+    StandardScaler,
+)
 from numcompute.rank import percentile, percentile_rank, rank, rankdata
 from numcompute.sort_search import (
     binary_search,
@@ -73,6 +88,7 @@ __all__ = [
     # preprocessing
     "StandardScaler",
     "MinMaxScaler",
+    "SimpleImputer",
     "OneHotEncoder",
     # sort_search
     "stable_sort",
@@ -106,6 +122,16 @@ __all__ = [
     "recall",
     "f1",
     "mse",
+    "roc_curve",
+    "auc",
+    "roc_auc_score",
+    "StreamingAccuracy",
+    "StreamingPrecision",
+    "StreamingRecall",
+    "StreamingF1",
+    "StreamingMSE",
+    "StreamingConfusionMatrix",
+    "StreamingAUC",
     # optim
     "gradient",
     "grad",

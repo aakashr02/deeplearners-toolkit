@@ -71,6 +71,12 @@ Converts categorical columns into binary indicator vectors
 Handles repeated categories
 Supports multiple columns
 
+### Streaming
+- `partial_fit(X_chunk)` folds one chunk into the state; `fit` is `reset()` followed by `partial_fit`, so batch and streaming use share one code path.
+- `StandardScaler` reuses `stats.RunningStats`, and `MinMaxScaler` keeps a running min and max.
+- `SimpleImputer` uses `RunningStats` for the mean, `StreamingQuantile` (bounded sketch) for the median, and merged value counts for the most frequent value.
+- `OneHotEncoder` appends newly seen categories after the existing ones, so earlier output columns keep their position.
+
 ### API Style
 All transformers follow the scikit‑learn pattern:
 
@@ -182,6 +188,15 @@ Confusion matrix
 ### Regression Metrics
 Mean Squared Error (MSE)
 
+### ROC / AUC
+`roc_curve` groups samples by distinct score, so tied scores form one step. `roc_auc_score` integrates that curve with the trapezoidal rule, which counts ties as one half.
+
+### Streaming metrics
+- A `_StreamingMetric` base class stores one small array of sufficient statistics per chunk: (correct, n) for accuracy, (TP, FP, FN) for precision, recall and F1, and (sum of squared errors, n) for MSE.
+- Without a window these arrays are summed into a running total. With `window=W` they are kept in a `deque(maxlen=W)`, so the oldest chunk drops out automatically.
+- `StreamingConfusionMatrix` re-indexes stored matrices into the current label set with `np.ix_`.
+- `StreamingAUC` merges (score, positives, negatives) tables with `np.unique` and `bincount`.
+
 ### Example
 
 acc = accuracy(y_true, y_pred)
@@ -280,20 +295,20 @@ benchmark(python_loop, numpy_sum, data)
 - synthetic NumPy arrays with fixed random seeds
 
 ## Actual results
-Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **529 passed, 0 failed**.
+Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **597 passed, 0 failed**.
 
 | Area | Test files | Tests |
 |---|---|---:|
 | Sorting, searching, selection | `test_sort_search.py`, `test_selection_contract.py` | 72 |
 | Ranking and percentiles | `test_rank.py`, `test_rank_vectorised.py`, `test_percentile.py` | 65 |
 | Utilities | `test_utils.py`, `test_utils_numerics.py` | 61 |
-| Preprocessing | `test_preprocessing.py`, `test_preprocessing_boundaries.py` | 53 |
+| Preprocessing | `test_preprocessing.py`, `test_preprocessing_boundaries.py`, `test_preprocessing_streaming.py` | 83 |
 | Cross-module contracts | `test_contracts.py` | 34 |
 | I/O | `test_io.py`, `test_io_chunks.py` | 21 |
 | Benchmarking | `test_benchmarking.py` | 21 |
 | Statistics and batched optimisation contracts | `test_stats_optim_contracts.py` | 64 |
 | Optimisation | `test_optim.py` | 15 |
-| Metrics | `test_metrics.py` | 12 |
+| Metrics | `test_metrics.py`, `test_metrics_streaming.py` | 50 |
 | Pipeline | `test_pipeline.py` | 12 |
 | Statistics | `test_stats.py`, `test_stats_streaming.py` | 99 |
 

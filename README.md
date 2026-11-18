@@ -258,15 +258,47 @@ Supported percentile-rank kinds are `rank`, `weak`, `strict`, and `mean`.
 | `f1(y_true, y_pred, positive_label=1)` | Calculates the harmonic mean of precision and recall. |
 | `mse(y_true, y_pred)` | Calculates mean squared error for numerical predictions. |
 
+| `roc_curve(y_true, y_score, positive_label=1)` | ROC points (`fpr`, `tpr`, `thresholds`) using every distinct score as a threshold. |
+| `auc(x, y)` | Trapezoidal area under a curve. |
+| `roc_auc_score(y_true, y_score, positive_label=1)` | ROC AUC; tied scores count as one half. |
+
 Precision, recall, and F1 use a specified positive class and are intended for binary classification.
+
+#### Streaming metrics
+
+`StreamingAccuracy`, `StreamingPrecision`, `StreamingRecall`, `StreamingF1`, `StreamingMSE`, `StreamingConfusionMatrix` and `StreamingAUC` all provide `update(y_true_chunk, y_pred_chunk)`, `result()` and `reset()`.
+- Pass `window=W` to any of them for a rolling metric over the last W chunks.
+- They store only per-chunk counts or sums, so results equal the one-shot function on all data seen. F1 is computed from summed counts, not by averaging per-chunk F1 scores.
+- The confusion matrix grows its label set as new labels appear.
+- `StreamingAUC` keeps positive and negative counts per distinct score, which is exact and small for tree leaf probabilities.
+
+```python
+from numcompute import StreamingAccuracy
+
+acc, recent = StreamingAccuracy(), StreamingAccuracy(window=5)
+for y_chunk, pred_chunk in stream:
+    acc.update(y_chunk, pred_chunk)
+    recent.update(y_chunk, pred_chunk)
+print(acc.result(), recent.result())
+```
 
 ### 7. `preprocessing.py` — Data preprocessing
 
 | Class | Methods | Description |
 |---|---|---|
-| `StandardScaler` | `fit`, `transform`, `fit_transform` | Centers features and scales by standard deviation. |
-| `MinMaxScaler(feature_range=(0, 1))` | `fit`, `transform`, `fit_transform` | Scales features to a specified range. |
-| `OneHotEncoder(handle_unknown="error")` | `fit`, `transform`, `fit_transform` | Encodes categorical columns as binary features. |
+| `StandardScaler` | `fit`, `partial_fit`, `transform`, `fit_transform`, `reset` | Centers features and scales by standard deviation; running mean and variance via `RunningStats` (Welford). |
+| `MinMaxScaler(feature_range=(0, 1), clip=False)` | same | Scales features to a specified range; running min and max. `clip=True` keeps streamed values inside the range. |
+| `SimpleImputer(strategy="mean", fill_value=None, max_centroids=512)` | same | Replaces NaN with a per-feature `mean`, `median`, `most_frequent` or `constant` value, updated on the fly. |
+| `OneHotEncoder(handle_unknown="error")` | same | Encodes categorical columns as binary features. Categories expand incrementally and are append-only, so existing output columns never move. |
+
+```python
+from numcompute import SimpleImputer, StandardScaler, read_csv_chunks
+
+imputer, scaler = SimpleImputer("median"), StandardScaler()
+for chunk in read_csv_chunks("stream.csv", chunk_size=500):
+    filled = imputer.partial_fit(chunk).transform(chunk)
+    scaled = scaler.partial_fit(filled).transform(filled)
+```
 
 Fit preprocessing components on training data and reuse the fitted components to transform new data.
 
@@ -467,7 +499,7 @@ python -m pytest
 
 ### Test results
 
-Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **529 passed, 0 failed** (about 3 seconds).
+Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **597 passed, 0 failed** (about 3 seconds).
 
 | Test file | Tests | What it verifies |
 |---|---:|---|
@@ -477,6 +509,7 @@ Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **529 passed, 0 faile
 | `test_percentile.py` | 26 | All interpolation methods vs. `np.percentile`, NaN policies vs. `np.nanpercentile`, axes, output shapes, extreme q, infinity |
 | `test_io_chunks.py` | 20 | Fill/skip missing values, tab delimiter, 2D output, chunked streaming equals a full read, laziness, ragged rows |
 | `test_preprocessing.py` | 9 | Ordinary scaling and encoding |
+| `test_preprocessing_streaming.py` | 30 | `partial_fit` equals `fit` for any chunking, large-offset stream, running min/max and clip, imputer strategies and on-the-fly updates, append-only one-hot categories |
 | `test_preprocessing_boundaries.py` | 44 | Constant columns, fitted feature mismatches, use before `fit`, 1D/empty/NaN/inf/non-numeric input, unknown categories |
 | `test_rank.py` | 25 | Ranking methods, NaN policies, percentile ranks |
 | `test_rank_vectorised.py` | 14 | Vectorised tie groups vs. an \(O(n^2)\) reference, all-tied and empty input |
@@ -485,6 +518,7 @@ Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **529 passed, 0 faile
 | `test_utils.py` | 24 | Numeric validation, shape checks, safe division |
 | `test_optim.py` | 15 | Gradients and Jacobians |
 | `test_metrics.py` | 12 | Classification and regression metrics |
+| `test_metrics_streaming.py` | 38 | ROC/AUC vs. brute force with ties, streaming metrics equal batch metrics, growing confusion-matrix labels, AUC memory per distinct score, rolling windows, reset |
 | `test_pipeline.py` | 12 | Pipeline fit/transform/predict |
 | `test_stats.py` | 11 | Descriptive statistics |
 | `test_stats_streaming.py` | 88 | Streaming stats match one-shot results for any chunking (incl. empty/1-row chunks), 1e9-offset stability, constant and all-NaN features, ddof edge cases, merge, windows, NumPy histogram/quantile parity, bounded-memory sketch accuracy and memory bound, no RuntimeWarnings |
