@@ -425,6 +425,15 @@ Every function returns the matplotlib `Figure`.
 - NaN values, such as chunks before the first retrain, appear as gaps, and the chunk axis uses integer ticks.
 - matplotlib is imported only when a plot is drawn.
 
+### Demos
+
+| Notebook | Shows |
+|---|---|
+| `demo/quickstart.ipynb` | Part 1 tour: CSV loading, preprocessing, statistics, sorting and searching, ranking, metrics, gradients, pipeline. |
+| `demo/stream_demo.ipynb` | Streaming: loads `demo/stream_data.csv` (6,000 rows, 3% missing values, concept drift) with `read_csv_chunks`; trains `SimpleImputer → StandardScaler → DecisionTreeClassifier` chunk by chunk with `partial_fit` via `StreamTrainer`; plots accuracy, error and memory over time, compares `buffer_size=200` vs `1500`, shows predictions vs ground truth on the latest chunk, and includes both benchmarks. |
+
+Regenerate the demo dataset with `python demo/make_stream_data.py`, then open the notebook from the `demo/` folder.
+
 ## Performance and complexity
 
 The following table gives theoretical or typical complexity estimates, rather than benchmark measurements. Actual performance depends on array dimensions, data types, NumPy's implementation, and the cost of user-supplied functions.
@@ -551,33 +560,60 @@ These estimates describe algorithmic growth, not measured execution speed. Bench
 
 ## Performance Benchmarking
 
-We compared the performance of NumPy-based vectorised operations against equivalent Python-loop implementations. Three operations were selected for benchmarking: Mean, Mean Squared Error (MSE), and StandardScaler.
-
-The experiments used a fixed random seed of 42 for reproducibility. Each operation was warmed up before performing five timed runs, and the median execution time was recorded.
-
-### Benchmark Results
-
-| Operation | Elements | Python Loop (ms) | NumPy (ms) | Speedup |
-|---|---:|---:|---:|---:|
-| Mean | 100,000 | 7.0359 | 0.4829 | 14.57× |
-| MSE | 100,000 | 22.0071 | 0.3809 | 57.78× |
-| StandardScaler | 50,000 | 29.0550 | 0.7463 | 38.93× |
-
-### Observations
-
-All three NumPy implementations were faster than their Python-loop equivalents. MSE achieved the highest speedup of 57.78×, followed by StandardScaler at 38.93× and Mean at 14.57×.
-
-These results highlight the advantages of vectorised numerical operations for the tested input sizes. Execution times may vary depending on the hardware and software environment.
-
-### Running the Benchmarks
-
-Run the following command from the project root:
+Run every benchmark from the project root (about 5 seconds):
 
 ```bash
 python -m numcompute.benchmarking
 ```
 
-The script generates reproducible input data, measures execution times and prints a comparison table.
+Each loop-based implementation is first checked to produce the same result as the vectorised one, and only then timed. Timings are the median of several runs after one warm-up. Data uses fixed random seeds, so the results are reproducible.
+
+**Environment:**
+
+| Machine | OS | Python | NumPy |
+|---|---|---|---|
+| Intel Core i7-10750H @ 2.60 GHz, 15.8 GB RAM | Windows 11 (10.0.26200) | 3.9.6 | 1.26.0 |
+
+Absolute times vary between machines; the relative comparisons are what matter.
+
+### Batch operations: loop vs vectorised
+
+| Operation | Elements | Python loop (ms) | NumPy (ms) | Speedup |
+|---|---:|---:|---:|---:|
+| Mean | 100,000 | 11.62 | 1.00 | 11.7× |
+| MSE | 100,000 | 39.91 | 0.92 | 43.6× |
+| StandardScaler | 50,000 | 62.33 | 5.23 | 11.9× |
+
+### Streaming components: loop vs vectorised
+
+| Operation | Elements | Python loop (ms) | NumPy (ms) | Speedup |
+|---|---:|---:|---:|---:|
+| Tree `partial_fit` (4,000 samples streamed in chunks of 200, `buffer_size=1000`) | 4,000 | 242.6 | 71.2 | 3.4× |
+| Tree `predict` | 20,000 | 28.8 | 6.5 | 4.5× |
+| `RunningStats` (Welford, chunks of 500 × 5 features) | 100,000 | 44.7 | 9.3 | 4.8× |
+
+- **Tree `partial_fit`:** the loop version is `LoopDecisionTreeClassifier`, the same tree with its split search in Python loops. Both receive the same chunks and build **identical trees**, which is asserted before timing.
+- **Why the tree speedup is lower:** the loop version already uses efficient running class counts, and the vectorised version still loops over nodes in Python.
+- **Tree `predict`:** the loop version walks one sample at a time, while the vectorised version moves all samples one tree level per step.
+
+### Effect of `buffer_size`
+
+10,000 samples were streamed in 100 chunks of 100 through `SimpleImputer → StandardScaler → DecisionTreeClassifier(max_depth=6)`. The concept drifts at 50%. Accuracy is test-then-train, so each chunk is scored before the model trains on it.
+
+| `buffer_size` | Accuracy | Accuracy after drift | Retrains | Total retrain time (ms) | Time per retrain (ms) | Peak memory (KB) |
+|---:|---:|---:|---:|---:|---:|---:|
+| 100 | 0.821 | 0.817 | 100 | 512.2 | 5.1 | 65.5 |
+| 250 | 0.854 | 0.843 | 33 | 308.7 | 9.4 | 70.6 |
+| 500 | 0.869 | 0.853 | 20 | 237.5 | 11.9 | 81.5 |
+| 1000 | **0.875** | 0.851 | 10 | 190.4 | 19.0 | 96.3 |
+| 2000 | 0.853 | 0.817 | 5 | 148.4 | 29.7 | 131.4 |
+
+**Observations:**
+- **Small buffers:** they retrain constantly on little data, so each tree is weaker. They also cost the most total retraining time, because the per-retrain overhead is paid 100 times.
+- **Large buffers:** they retrain rarely, but each retrain is slower and the buffer holds more memory. They also react late to the drift; at 2,000, accuracy after the drift falls back to the level of the smallest buffer.
+- **The sweet spot:** about 500–1,000, roughly 5–10% of this stream. Peak memory has a floor of about 65 KB, which is the imputer's bounded median summary.
+
+`demo/stream_demo.ipynb` repeats the `buffer_size` experiment on the demo CSV and plots it.
 
 ## Testing
 
@@ -589,7 +625,7 @@ python -m pytest
 
 ### Test results
 
-Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **849 passed, 0 failed** (about 3 seconds).
+Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **877 passed, 0 failed** (about 10 seconds).
 
 | Test file | Tests | What it verifies |
 |---|---:|---|
@@ -603,7 +639,7 @@ Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **849 passed, 0 faile
 | `test_preprocessing_boundaries.py` | 44 | Constant columns, fitted feature mismatches, use before `fit`, 1D/empty/NaN/inf/non-numeric input, unknown categories |
 | `test_rank.py` | 25 | Ranking methods, NaN policies, percentile ranks |
 | `test_rank_vectorised.py` | 14 | Vectorised tie groups vs. an \(O(n^2)\) reference, all-tied and empty input |
-| `test_benchmarking.py` | 21 | Loop and NumPy results agree, `measure_time` behaviour, result fields, invalid sizes, speedup > 1 |
+| `test_benchmarking.py` | 49 | Loop and NumPy results agree (batch ops, `LoopDecisionTreeClassifier` builds identical trees for Gini and entropy, batch and streaming, loop prediction, loop Welford), `measure_time`, result fields, speedup > 1, `buffer_size` trends (retrains, first scored chunk, memory), buffers larger than the stream, streams with NaN, data generator (drift, missing values, reproducibility), invalid input |
 | `test_contracts.py` | 34 | Shared validators, pipeline contracts, metric return types, package exports |
 | `test_utils.py` | 24 | Numeric validation, shape checks, safe division |
 | `test_optim.py` | 15 | Gradients and Jacobians |

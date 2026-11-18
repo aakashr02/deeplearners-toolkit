@@ -311,18 +311,23 @@ Manages a model or pipeline over a stream: test-then-train evaluation, metric ac
 - Compares Python loops vs NumPy vectorised implementations.
 
 ### Features
-- Time measurement
-- Speedup calculation
-- Summary tables
+- `measure_time`: median of N runs after one warm-up.
+- Batch loop vs NumPy: mean, MSE and `StandardScaler` (`run_benchmarks`).
+- Streaming loop vs vectorised (`run_streaming_benchmarks`):
+  - **Tree `partial_fit`:** `LoopDecisionTreeClassifier` overrides only `_best_split` with Python loops. It visits candidates in the same order with the same arithmetic, so both trees are identical, which is asserted before timing.
+  - **Tree `predict`:** `loop_tree_predict` walks one sample at a time.
+  - **`RunningStats`:** `loop_running_stats` updates Welford's algorithm one value at a time.
+- Effect of `buffer_size` (`benchmark_buffer_sizes`): test-then-train accuracy (overall and after the drift), number of retrains, total and per-retrain time, first scored chunk, and peak memory.
+- `make_stream_data`: a reproducible synthetic stream with concept drift, label noise and optional missing values. It also generates `demo/stream_data.csv`.
+- `environment_info`: platform, processor, Python and NumPy versions, printed with the results.
 
 ### Example
 
-benchmark(python_loop, numpy_sum, data)
+python -m numcompute.benchmarking
 
 ### Design Notes
-- Used in final report
-- Demonstrates efficiency gains
-- Helps students understand vectorisation benefits
+- Correctness is checked before every timing, so a speedup is never reported for code that gives a different answer.
+- Results and environment notes are recorded in the README.
 
 # 3. Testing
 ## Approach
@@ -336,7 +341,7 @@ benchmark(python_loop, numpy_sum, data)
 - synthetic NumPy arrays with fixed random seeds
 
 ## Actual results
-Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **849 passed, 0 failed**.
+Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **877 passed, 0 failed**.
 
 | Area | Test files | Tests |
 |---|---|---:|
@@ -347,7 +352,7 @@ Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **849 passed, 0 failed**.
 | Streaming edge cases (preprocessing and metrics) | `test_streaming_edge_cases.py` | 102 |
 | Cross-module contracts | `test_contracts.py` | 34 |
 | I/O | `test_io.py`, `test_io_chunks.py` | 21 |
-| Benchmarking | `test_benchmarking.py` | 21 |
+| Benchmarking | `test_benchmarking.py` | 49 |
 | Statistics and batched optimisation contracts | `test_stats_optim_contracts.py` | 64 |
 | Optimisation | `test_optim.py` | 15 |
 | Metrics | `test_metrics.py`, `test_metrics_streaming.py` | 50 |
@@ -392,9 +397,13 @@ Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **849 passed, 0 failed**.
 - Execution time
 - Speedup factor
 
+## Streaming
+- Loop-based vs vectorised implementations of the tree's split search (under `partial_fit`), tree prediction and running statistics.
+- Different `buffer_size` values on the same drifting stream: accuracy, retraining time and memory.
+
 ## Output
-- Tables for final report
-- Plots (optional)
+- Tables printed by `python -m numcompute.benchmarking`, recorded in the README with the environment.
+- Plots in `demo/stream_demo.ipynb`.
 
 # 5. End‑to‑End Workflow (quickstart.ipynb)
 The demonstration notebook shows:
@@ -410,6 +419,14 @@ The demonstration notebook shows:
 - Benchmark
 
 This provides a complete walkthrough of the toolkit.
+
+## Streaming demo (stream_demo.ipynb)
+- Loads `stream_data.csv` (6,000 rows, 3% missing values, concept drift halfway) with `read_csv` and streams it with `read_csv_chunks`.
+- Trains `SimpleImputer → StandardScaler → DecisionTreeClassifier(buffer_size=600)` chunk by chunk with `partial_fit`, via `StreamTrainer` (test-then-train).
+- Logs and plots per-chunk, rolling and cumulative accuracy, error rate and memory footprint.
+- Compares `buffer_size=200` vs `1500` with `compare_models`.
+- Shows predictions vs ground truth on the latest chunk, using predictions made before training on it.
+- Runs both streaming benchmarks and plots accuracy, retraining time and memory against `buffer_size`.
 
 # 6. Limitations
 - No GPU support
