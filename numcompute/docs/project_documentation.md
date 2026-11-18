@@ -243,6 +243,28 @@ Implements a simple pipeline system similar to scikit‑learn.
 - Allows sequential transformations
 - Easy to extend
 
+### Streaming
+`Pipeline.partial_fit(X_chunk, y_chunk)` first checks that every step implements `partial_fit`, so a failure updates nothing. It then runs `partial_fit` followed by `transform` on each transformer, so each chunk is transformed with statistics that include it, and finally calls `partial_fit(X, y)` on the estimator. `predict_proba` passes through to the final step.
+
+## 2.8b tree.py — Decision Tree with Buffered Retraining
+### Purpose
+`DecisionTreeClassifier`: a depth-limited classification tree using Gini or entropy, which retrains on a buffer of streamed chunks.
+
+### Storage
+The tree is stored as parallel arrays: `feature_`, `threshold_`, `children_left_`, `children_right_`, `value_` (class counts) and `node_depth_`. It is grown with an explicit stack, so depth is not limited by Python recursion.
+
+### Vectorised split search
+For a node with n samples, F candidate features and C classes:
+- `argsort` all F columns at once, and reorder the one-hot labels into an (n, F, C) array;
+- `cumsum` along the samples gives the left class counts at every split position; right = parent − left;
+- weighted impurity is computed for all (n−1) × F candidates in one expression; positions between equal values are masked out;
+- `argmin` returns the first best split (deterministic). A split is kept only if it lowers impurity by more than 1e-12.
+
+The thresholds are midpoints computed as `low/2 + high/2`, which cannot overflow, with a fallback to `low` when adjacent floats round upward. The root split is verified against an exhaustive loop-based search in the tests.
+
+### Buffered retraining (`partial_fit`)
+Chunks are appended to a buffer. When the buffer holds at least `buffer_size` samples, the tree is rebuilt on the buffer only, and the buffer is cleared. `predict` keeps using the last tree between retrains. `classes_` is the union of all labels seen, so probability columns stay stable. `fit` starts from scratch and clears the buffer.
+
 ## 2.9 utils.py — Shared Utilities
 ### Purpose
 - Provides helper functions used across modules.
@@ -295,7 +317,7 @@ benchmark(python_loop, numpy_sum, data)
 - synthetic NumPy arrays with fixed random seeds
 
 ## Actual results
-Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **699 passed, 0 failed**.
+Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **786 passed, 0 failed**.
 
 | Area | Test files | Tests |
 |---|---|---:|
@@ -310,7 +332,8 @@ Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **699 passed, 0 failed**.
 | Statistics and batched optimisation contracts | `test_stats_optim_contracts.py` | 64 |
 | Optimisation | `test_optim.py` | 15 |
 | Metrics | `test_metrics.py`, `test_metrics_streaming.py` | 50 |
-| Pipeline | `test_pipeline.py` | 12 |
+| Pipeline | `test_pipeline.py`, `test_pipeline_streaming.py` | 30 |
+| Decision tree | `test_tree.py` | 69 |
 | Statistics | `test_stats.py`, `test_stats_streaming.py` | 99 |
 
 ## Corrections driven by testing
@@ -334,6 +357,9 @@ Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **699 passed, 0 failed**.
   - single-class AUC divided 0/0 with a RuntimeWarning → `ValueError` (one-shot) or NaN (streaming);
   - NaN scores corrupted the ROC curve → rejected;
   - `auc()` accepted a non-monotonic x and gave a negative area for decreasing x → both fixed.
+- Decision tree testing:
+  - `predict`/`predict_proba` before training raised `AttributeError` (`classes_`, then `value_`) instead of `NotFittedError` → the fitted-state check now runs first;
+  - the threshold midpoint `low + (high - low)/2` overflowed for ±1e308 → `low/2 + high/2`.
 - `percentile([inf, inf], 50)` returned NaN because inf − inf = NaN in linear interpolation → returns the shared endpoint when both neighbours are equal.
 
 # 4. Benchmarking Strategy

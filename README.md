@@ -14,7 +14,8 @@ The package is designed to offer useful numerical and data-processing operations
 - **Ranking:** Multiple ranking methods, configurable ordering, axis support, and NaN handling.
 - **Evaluation metrics:** Accuracy, confusion matrix, precision, recall, F1 score, and mean squared error.
 - **Preprocessing:** Standard scaling, min-max scaling, and one-hot encoding.
-- **Pipelines:** Sequential preprocessing and optional final estimator integration.
+- **Pipelines:** Sequential preprocessing and optional final estimator integration, with streaming `partial_fit`.
+- **Decision tree:** `DecisionTreeClassifier` (Gini or entropy) with buffered streaming retraining.
 - **Input/output:** CSV loading into NumPy arrays, including chunked streaming and skip/fill handling of missing values.
 - **Utilities:** Numerically stable activations (sigmoid, softmax, log-softmax, logsumexp), distance functions and mini-batching.
 - **Percentiles:** `percentile()` with linear, lower, higher, midpoint and nearest interpolation.
@@ -340,6 +341,38 @@ All activations accept non-contiguous views, return float64, and raise `TypeErro
 | `fit(X, y)` | Fits preprocessing steps and an optional final estimator. |
 | `transform(X)` | Applies fitted preprocessing steps. |
 | `predict(X)` | Transforms input and predicts using the final estimator. |
+| `predict_proba(X)` | Transforms input and returns the final estimator's class probabilities. |
+| `partial_fit(X_chunk, y_chunk=None)` | Streams one chunk. Each transformer runs `partial_fit` and then `transform`; the final estimator runs `partial_fit(X, y)`. Empty chunks are no-ops. |
+
+```python
+from numcompute import DecisionTreeClassifier, Pipeline, StandardScaler
+
+pipe = Pipeline([
+    ("scale", StandardScaler()),
+    ("model", DecisionTreeClassifier(max_depth=5, buffer_size=500)),
+])
+for X_chunk, y_chunk in stream:
+    pipe.partial_fit(X_chunk, y_chunk)
+pipe.predict(X_new)
+```
+
+Every step must implement `partial_fit` for streaming; this is checked before any step is updated. A `OneHotEncoder` that gains categories mid-stream widens its output, so a tree after it raises a `ValueError` about the feature count; fix the categories up front or use `handle_unknown="ignore"` with a warm-up chunk.
+
+### 10. `tree.py` — Decision tree with buffered retraining
+
+| Method / attribute | Description |
+|---|---|
+| `DecisionTreeClassifier(criterion="gini", max_depth=None, min_samples_split=2, max_features=None, buffer_size=500, random_state=None)` | Depth-limited classification tree. `max_features` accepts an int, a float fraction, `"sqrt"`, `"log2"` or None. |
+| `fit(X, y)` | Trains from scratch; also clears the streaming buffer. |
+| `partial_fit(X_chunk, y_chunk)` | Appends the chunk to a buffer. When the buffer holds at least `buffer_size` samples, the tree is retrained on the buffered data and the buffer is cleared. |
+| `predict(X)`, `predict_proba(X)`, `score(X, y)`, `apply(X)` | Use the most recently trained tree. Before the first retrain they raise `NotFittedError`, stating how many samples are buffered. |
+| `get_depth()`, `get_n_leaves()`, `n_retrains_`, `n_buffered_`, `last_fit_time_` | Introspection and streaming counters. |
+
+- **Split search, vectorised per node:** all candidate features are sorted at once, cumulative one-hot class counts give left and right impurity for every threshold, and one `argmin` picks the best split.
+- **Thresholds:** midpoints computed as `low/2 + high/2`, so they never overflow; if adjacent floats round onto the upper value, the lower value is used instead.
+- **Growth and prediction:** the tree grows with an explicit stack (no recursion limit), and prediction moves all samples one level per step.
+- **Stable classes:** `classes_` covers every label seen by `partial_fit`, so `predict_proba` columns stay stable even when a buffer lacks a class.
+- **Input checks:** NaN and infinity in X are rejected; impute missing values first.
 
 ## Performance and complexity
 
@@ -505,7 +538,7 @@ python -m pytest
 
 ### Test results
 
-Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **699 passed, 0 failed** (about 3 seconds).
+Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **786 passed, 0 failed** (about 3 seconds).
 
 | Test file | Tests | What it verifies |
 |---|---:|---|
@@ -527,6 +560,8 @@ Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **699 passed, 0 faile
 | `test_streaming_edge_cases.py` | 102 | Empty chunks, use before fitting/updating, reset, constant columns across chunks, single-row chunks, imputer all-NaN columns and invalid `fill_value`, one-hot NaN and type changes, zero denominators, rolling windows of uneven chunks, fixed-label violations, single-class AUC, NaN/non-numeric/infinite scores, non-monotonic `auc` input; RuntimeWarnings fail the tests |
 | `test_metrics_streaming.py` | 38 | ROC/AUC vs. brute force with ties, streaming metrics equal batch metrics, growing confusion-matrix labels, AUC memory per distinct score, rolling windows, reset |
 | `test_pipeline.py` | 12 | Pipeline fit/transform/predict |
+| `test_pipeline_streaming.py` | 18 | `partial_fit` equals manual chaining, imputer → scaler → tree streams, `predict_proba`, empty chunks, predicting before the tree retrains, missing `partial_fit`, feature-count changes, one-hot width growth |
+| `test_tree.py` | 69 | Root split vs. exhaustive loop search (Gini and entropy), perfect fit, depth and `min_samples_split` limits, single-class, constant and conflicting data, adjacent floats, ±1e308 values, 1,500-leaf tree, `max_features` options, invalid input, buffered retraining (timing, clearing, buffer-only data, oversized chunks, stable classes, new classes) |
 | `test_stats.py` | 11 | Descriptive statistics |
 | `test_stats_streaming.py` | 88 | Streaming stats match one-shot results for any chunking (incl. empty/1-row chunks), 1e9-offset stability, constant and all-NaN features, ddof edge cases, merge, windows, NumPy histogram/quantile parity, bounded-memory sketch accuracy and memory bound, no RuntimeWarnings |
 | `test_stats_optim_contracts.py` | 64 | Stats input contract (empty, non-numeric, axis bounds, all-NaN slices without warnings, all-equal, strided views, histogram NaN policy, quantile q range) and batched gradient/Jacobian validation |

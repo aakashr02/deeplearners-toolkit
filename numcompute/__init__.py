@@ -62,6 +62,7 @@ from numcompute.stats import (
     update_stats,
     variance,
 )
+from numcompute.tree import DecisionTreeClassifier
 from numcompute.utils import (
     NotFittedError,
     batch_iterator,
@@ -140,6 +141,8 @@ __all__ = [
     "jacobian_batched",
     # pipeline
     "Pipeline",
+    # tree
+    "DecisionTreeClassifier",
     # utils
     "NotFittedError",
     "safe_divide",

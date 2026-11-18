@@ -11,11 +11,16 @@ Component contracts
 * Estimator (final step only): ``fit(X, y) -> self`` and
   ``predict(X) -> ndarray``. A final step is treated as an estimator
   exactly when it has a ``predict`` method.
+* Streaming: every step used by ``Pipeline.partial_fit`` must also have
+  ``partial_fit`` (transformers: ``partial_fit(X)``; estimator:
+  ``partial_fit(X, y)``).
 
 Shape and fitted-state checks (feature count, use before fit) are
 enforced by each component; the pipeline adds structural checks and
 raises ``NotFittedError`` when used before fitting.
 """
+
+import numpy as np
 
 from numcompute.utils import NotFittedError
 
@@ -291,6 +296,113 @@ class Pipeline:
             X_current = step.transform(X_current)
 
         return self.steps[-1][1].predict(X_current)
+
+    def predict_proba(self, X):
+        """Transform X and return the final estimator's class probabilities.
+
+        Args:
+            X (numpy.ndarray): Input data with the same number of features
+                used in fitting.
+
+        Returns:
+            numpy.ndarray: Probabilities of shape (n_samples, n_classes).
+
+        Raises:
+            NotFittedError: If the pipeline has not been fitted.
+            AttributeError: If the final step has no ``predict_proba``.
+
+        Notes
+        -----
+        Time complexity: sum of the transform costs plus the estimator's
+        predict_proba cost.
+        """
+        self._require_fitted("predict_proba")
+        final_name, final_step = self.steps[-1]
+
+        if not callable(getattr(final_step, "predict_proba", None)):
+            raise AttributeError(
+                f"Final step '{final_name}' does not implement predict_proba"
+            )
+
+        X_current = X
+        for _, step in self.steps[:-1]:
+            X_current = step.transform(X_current)
+
+        return final_step.predict_proba(X_current)
+
+    def partial_fit(self, X_chunk, y_chunk=None):
+        """Update every step incrementally with one chunk.
+
+        Each transformer is updated with ``partial_fit`` and then used to
+        transform the chunk for the next step, so the chunk is always
+        transformed with statistics that include it. A final estimator
+        receives ``partial_fit(X_transformed, y_chunk)``.
+
+        Example::
+
+            pipe = Pipeline([
+                ("scale", StandardScaler()),
+                ("model", DecisionTreeClassifier(max_depth=5,
+                                                 buffer_size=500)),
+            ])
+            for X_chunk, y_chunk in stream:
+                pipe.partial_fit(X_chunk, y_chunk)
+
+        Args:
+            X_chunk (numpy.ndarray): Chunk of shape (n_samples, n_features).
+                An empty chunk is a no-op.
+            y_chunk (numpy.ndarray or None): Targets of shape (n_samples,);
+                required when the final step is an estimator.
+
+        Returns:
+            Pipeline: The updated pipeline instance.
+
+        Raises:
+            ValueError: If the pipeline has no steps, or the final step is
+                an estimator and ``y_chunk`` is None.
+            AttributeError: If a step does not implement ``partial_fit``.
+            ValueError / TypeError: As raised by the steps, e.g. for a
+                feature-count mismatch between chunks.
+
+        Notes
+        -----
+        Time complexity: sum of the steps' partial_fit and transform
+        costs for one chunk. Space complexity: the largest intermediate
+        chunk plus each step's own state.
+        """
+        self._require_steps()
+
+        for name, step in self.steps:
+            if not callable(getattr(step, "partial_fit", None)):
+                raise AttributeError(
+                    f"Step '{name}' does not support streaming; it must "
+                    "implement partial_fit"
+                )
+
+        final_name, final_step = self.steps[-1]
+        final_is_estimator = callable(getattr(final_step, "predict", None))
+
+        if final_is_estimator and y_chunk is None:
+            raise ValueError(
+                "y_chunk is required when the final step is an estimator"
+            )
+
+        if np.shape(X_chunk)[:1] == (0,):
+            return self
+
+        X_current = X_chunk
+        for _, step in self.steps[:-1]:
+            step.partial_fit(X_current)
+            X_current = step.transform(X_current)
+
+        if final_is_estimator:
+            final_step.partial_fit(X_current, y_chunk)
+        else:
+            final_step.partial_fit(X_current)
+
+        self._final_is_estimator = final_is_estimator
+        self._fitted = True
+        return self
 
 
 __all__ = ["Pipeline"]
