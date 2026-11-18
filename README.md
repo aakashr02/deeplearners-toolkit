@@ -10,7 +10,7 @@ The package is designed to offer useful numerical and data-processing operations
 
 - **Sorting and searching:** Stable sorting, multi-key sorting, binary search, top-\(k\) selection, and quick selection.
 - **Numerical differentiation:** Finite-difference gradient and Jacobian estimation, including batched variants.
-- **Statistics:** Mean, median, standard deviation, minimum, maximum, histogram, and quantile calculations.
+- **Statistics:** Mean, median, standard deviation, variance, minimum, maximum, histogram, and quantile calculations, plus streaming (chunk-by-chunk) running statistics, histograms and quantiles.
 - **Ranking:** Multiple ranking methods, configurable ordering, axis support, and NaN handling.
 - **Evaluation metrics:** Accuracy, confusion matrix, precision, recall, F1 score, and mean squared error.
 - **Preprocessing:** Standard scaling, min-max scaling, and one-hot encoding.
@@ -203,6 +203,27 @@ Supported finite-difference methods are central and forward differences.
 | `maximum(data, axis=None, ignore_nan=True)` | Calculates maximum values. |
 | `histogram(data, bins=10, range=None, ignore_nan=True)` | Computes histogram counts and bin edges. |
 | `quantile(data, q, axis=None, ignore_nan=True)` | Computes quantiles. |
+| `variance(data, axis=None, ignore_nan=True, ddof=0)` | Calculates variances. |
+
+#### Streaming statistics
+
+| Class / function | Description |
+|---|---|
+| `RunningStats(ignore_nan=True)` | Exact running count, mean, variance, std, min and max per feature, using the parallel Welford algorithm. Supports `merge()` for combining partial results. |
+| `StreamingHistogram(bins=10, range=None, window=None)` | Fixed-edge histogram that accumulates per chunk; `window=W` keeps only the last W chunks. Also tracks out-of-range and NaN counts. |
+| `StreamingQuantile(q=0.5, interpolation="linear", window=None, max_centroids=None)` | Exact quantiles over all data, over the last W chunks (`window`), or over the whole stream in bounded memory (`max_centroids=K`: exact until 2K values, then K weighted centroids; about 0.8% max error with K=256 on 100k values). |
+| `update_stats(X_chunk, state=None)` | Functional form; creates a `RunningStats` when `state` is None. |
+
+Every streaming object has `update_stats(X_chunk)` (alias `partial_fit`), `reset()` and `result()`. A chunk is 1D (one feature, so results are scalars) or 2D `(n_samples, n_features)`. The feature count is fixed by the first non-empty chunk. Empty chunks are allowed, and infinite values raise `ValueError`.
+
+```python
+from numcompute import RunningStats, read_csv_chunks
+
+stats = RunningStats.from_chunks(read_csv_chunks("large.csv", chunk_size=10_000))
+stats.mean, stats.std(ddof=1)
+```
+
+Chunks are merged as `mean = mean_a + delta * n_b / n` and `M2 = M2_a + M2_b + delta^2 * n_a * n_b / n`. These never form `sum(x^2)`, so the variance stays accurate even for data such as `1e9 + noise`, where the naive `E[x^2] - E[x]^2` formula fails. The result does not depend on how the stream is split into chunks.
 
 ### 5. `rank.py` — Ranking and percentile utilities
 
@@ -446,7 +467,7 @@ python -m pytest
 
 ### Test results
 
-Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **441 passed, 0 failed** (about 3 seconds).
+Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **529 passed, 0 failed** (about 3 seconds).
 
 | Test file | Tests | What it verifies |
 |---|---:|---|
@@ -466,6 +487,7 @@ Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **441 passed, 0 faile
 | `test_metrics.py` | 12 | Classification and regression metrics |
 | `test_pipeline.py` | 12 | Pipeline fit/transform/predict |
 | `test_stats.py` | 11 | Descriptive statistics |
+| `test_stats_streaming.py` | 88 | Streaming stats match one-shot results for any chunking (incl. empty/1-row chunks), 1e9-offset stability, constant and all-NaN features, ddof edge cases, merge, windows, NumPy histogram/quantile parity, bounded-memory sketch accuracy and memory bound, no RuntimeWarnings |
 | `test_stats_optim_contracts.py` | 64 | Stats input contract (empty, non-numeric, axis bounds, all-NaN slices without warnings, all-equal, strided views, histogram NaN policy, quantile q range) and batched gradient/Jacobian validation |
 | `test_io.py` | 1 | CSV loading |
 

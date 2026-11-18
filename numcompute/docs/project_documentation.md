@@ -150,10 +150,23 @@ NaN‑safe versions
 
 mean_val = mean(arr)
 
+### Streaming statistics
+- `RunningStats` keeps a per-feature count, mean, `M2`, min and max. Each chunk's statistics are computed with vectorised NumPy and merged with the Chan–Golub–LeVeque parallel form of Welford's algorithm. Memory is O(n_features), however long the stream.
+- `StreamingHistogram` uses fixed edges. Each chunk is binned with one `searchsorted` and one `bincount`. A `deque(maxlen=window)` of per-chunk counts gives the sliding window.
+- `StreamingQuantile` has three modes:
+  - *Exact* stores the values and evaluates them with `rank.percentile`.
+  - *Window* keeps only the last W chunks.
+  - *Sketch* (`max_centroids=K`) keeps raw values until there are more than 2K per feature, then merges them into K equal-mass weighted centroids. It interpolates between centroid midpoints, anchored at the exact min and max, so memory is O(K) per feature for the whole stream. The update, compression and query are vectorised across features: rows are padded with (inf, 0) entries, sorted once with `argsort`, and centroids are formed with `bincount`.
+- Shared contract (`_StreamingBase`):
+  - `update_stats(X_chunk)` / `partial_fit`, `reset()` and `result()`;
+  - the feature count is fixed by the first non-empty chunk;
+  - `NotFittedError` before any data.
+
 ### Design Notes
 Pure NumPy implementation
 Avoids Python loops
 Handles NaN values where appropriate
+A constant feature reports variance exactly 0 (detected via min == max), because rounding in chunk means otherwise leaves M2 ≈ 1e-34.
 
 ## 2.6 metrics.py — Classification & Regression Metrics
 ### Purpose
@@ -267,7 +280,7 @@ benchmark(python_loop, numpy_sum, data)
 - synthetic NumPy arrays with fixed random seeds
 
 ## Actual results
-Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **441 passed, 0 failed**.
+Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **529 passed, 0 failed**.
 
 | Area | Test files | Tests |
 |---|---|---:|
@@ -282,7 +295,7 @@ Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **441 passed, 0 failed**.
 | Optimisation | `test_optim.py` | 15 |
 | Metrics | `test_metrics.py` | 12 |
 | Pipeline | `test_pipeline.py` | 12 |
-| Statistics | `test_stats.py` | 11 |
+| Statistics | `test_stats.py`, `test_stats_streaming.py` | 99 |
 
 ## Corrections driven by testing
 - Constant columns produced NaN in both scalers → divisor of 1 for zero spread.

@@ -34,6 +34,9 @@ from numcompute.sort_search import (
     topk,
 )
 from numcompute.stats import (
+    RunningStats,
+    StreamingHistogram,
+    StreamingQuantile,
     histogram,
     maximum,
     mean,
@@ -41,6 +44,8 @@ from numcompute.stats import (
     minimum,
     quantile,
     std,
+    update_stats,
+    variance,
 )
 from numcompute.utils import (
     NotFittedError,
@@ -89,6 +94,11 @@ __all__ = [
     "maximum",
     "histogram",
     "quantile",
+    "variance",
+    "RunningStats",
+    "StreamingHistogram",
+    "StreamingQuantile",
+    "update_stats",
     # metrics
     "accuracy",
     "confusion_matrix",
