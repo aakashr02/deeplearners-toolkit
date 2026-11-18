@@ -23,17 +23,17 @@ from collections import deque
 
 import numpy as np
 
-from numcompute.utils import validate_int
+from numcompute.utils import NotFittedError, validate_int
 
 
-def _validate_pair(y_true, y_pred, numeric=False):
+def _validate_pair(y_true, y_pred, numeric=False, allow_empty=False):
     """
     Shared input contract for every metric.
 
     Both inputs are converted with ``np.asarray`` (float64 when
     ``numeric`` is True), must have identical shapes and must not be
-    empty. Labels may be of any comparable dtype when ``numeric`` is
-    False.
+    empty (unless ``allow_empty``, used by streaming updates). Labels may
+    be of any comparable dtype when ``numeric`` is False.
 
     Raises
     ------
@@ -45,9 +45,12 @@ def _validate_pair(y_true, y_pred, numeric=False):
     y_pred = np.asarray(y_pred, dtype=dtype)
 
     if y_true.shape != y_pred.shape:
-        raise ValueError("y_true and y_pred must have the same shape")
+        raise ValueError(
+            f"y_true and y_pred must have the same shape; received "
+            f"{y_true.shape} and {y_pred.shape}"
+        )
 
-    if y_true.size == 0:
+    if y_true.size == 0 and not allow_empty:
         raise ValueError("Input arrays cannot be empty")
 
     return y_true, y_pred
@@ -302,14 +305,22 @@ def mse(y_true, y_pred):
 # ROC curve and AUC
 # ============================================================
 
-def _score_counts(y_true, y_score, positive_label):
+def _score_counts(y_true, y_score, positive_label, allow_empty=False):
     """
     Distinct scores (ascending) with the number of positive and negative
     samples at each. Ties share one entry, which is what makes tied scores
     count as half-correct in the AUC.
     """
-    y_true, y_score = _validate_pair(y_true, y_score)
-    y_score = np.asarray(y_score, dtype=float).ravel()
+    y_true, y_score = _validate_pair(y_true, y_score, allow_empty=allow_empty)
+
+    if not (np.issubdtype(y_score.dtype, np.number)
+            or y_score.dtype == bool) or np.iscomplexobj(y_score):
+        raise TypeError("y_score must contain real numeric scores")
+
+    y_score = y_score.astype(float).ravel()
+    if np.any(np.isnan(y_score)):
+        raise ValueError("y_score must not contain NaN")
+
     is_positive = (y_true.ravel() == positive_label).astype(float)
 
     scores, inverse = np.unique(y_score, return_inverse=True)
@@ -319,8 +330,17 @@ def _score_counts(y_true, y_score, positive_label):
     return scores, positives, totals - positives
 
 
+def _has_both_classes(positives, negatives):
+    return positives.sum() > 0 and negatives.sum() > 0
+
+
 def _roc_from_counts(scores, positives, negatives):
     """ROC points from per-score counts, sweeping thresholds high to low."""
+    if not _has_both_classes(positives, negatives):
+        raise ValueError(
+            "ROC curve is undefined unless both positive and negative "
+            "samples are present"
+        )
     tps = np.cumsum(positives[::-1])
     fps = np.cumsum(negatives[::-1])
     tpr = np.r_[0.0, tps / tps[-1]]
@@ -355,8 +375,11 @@ def roc_curve(y_true, y_score, positive_label=1):
 
     Raises
     ------
+    TypeError
+        If y_score is not real numeric.
     ValueError
-        If shapes differ or the inputs are empty.
+        If shapes differ, the inputs are empty, y_score contains NaN, or
+        only one class is present. Infinite scores are allowed.
 
     Notes
     -----
@@ -379,12 +402,14 @@ def auc(x, y):
     Returns
     -------
     float
-        Area under the curve.
+        Area under the curve. For decreasing x the sign is flipped, so the
+        area is the same as for the reversed points.
 
     Raises
     ------
     ValueError
-        If x and y differ in shape or have fewer than two points.
+        If x and y differ in shape, have fewer than two points, or x is
+        not monotonic.
 
     Notes
     -----
@@ -393,7 +418,16 @@ def auc(x, y):
     x, y = _validate_pair(x, y, numeric=True)
     if x.size < 2:
         raise ValueError("at least two points are required to compute AUC")
-    return float(np.sum(np.diff(x) * (y[1:] + y[:-1]) / 2.0))
+
+    dx = np.diff(x)
+    if np.all(dx >= 0):
+        direction = 1.0
+    elif np.all(dx <= 0):
+        direction = -1.0
+    else:
+        raise ValueError("x must be monotonic (increasing or decreasing)")
+
+    return float(direction * np.sum(dx * (y[1:] + y[:-1]) / 2.0))
 
 
 def roc_auc_score(y_true, y_score, positive_label=1):
@@ -494,15 +528,19 @@ class _StreamingMetric:
         Raises
         ------
         ValueError
-            If the shapes differ or the chunk is empty.
+            If the shapes differ.
 
         Notes
         -----
+        An empty chunk is accepted and adds nothing (with a window it still
+        occupies one slot, because the window counts chunks).
+
         Time complexity: O(n_samples) for counting metrics.
         Space complexity: O(1) per chunk kept (O(window) in total).
         """
         y_true, y_pred = _validate_pair(
-            y_true_chunk, y_pred_chunk, numeric=self._numeric
+            y_true_chunk, y_pred_chunk, numeric=self._numeric,
+            allow_empty=True,
         )
         stats = self._chunk_stats(y_true, y_pred)
 
@@ -515,7 +553,15 @@ class _StreamingMetric:
         self.n_samples_seen_ += y_true.size
         return self
 
+    def _require_update(self):
+        if self.n_updates_ == 0:
+            raise NotFittedError(
+                f"{type(self).__name__} has no data yet; call update() "
+                "with at least one chunk before result()"
+            )
+
     def _current(self):
+        self._require_update()
         if self.window is None:
             return self._total
         return np.sum(self._chunks, axis=0)
@@ -529,11 +575,22 @@ class _StreamingMetric:
         float or np.ndarray
             The metric value.
 
+        Raises
+        ------
+        NotFittedError
+            If ``update`` has not been called since construction or the
+            last ``reset``.
+
         Notes
         -----
         Time complexity: O(window) with a window, otherwise O(1).
         """
         return self._compute(self._current())
+
+
+def _safe_ratio(numerator, denominator, empty=np.nan):
+    """``numerator / denominator``, or ``empty`` when the denominator is 0."""
+    return float(empty) if denominator == 0 else float(numerator / denominator)
 
 
 class StreamingAccuracy(_StreamingMetric):
@@ -544,6 +601,10 @@ class StreamingAccuracy(_StreamingMetric):
     ----------
     window : int or None, default=None
         Rolling window size in chunks.
+
+    Notes
+    -----
+    NaN when only empty chunks have been seen (or are in the window).
 
     Examples
     --------
@@ -556,7 +617,7 @@ class StreamingAccuracy(_StreamingMetric):
         return np.array([np.sum(y_true == y_pred), y_true.size], dtype=float)
 
     def _compute(self, stats):
-        return float(stats[0] / stats[1])
+        return _safe_ratio(stats[0], stats[1])
 
 
 class _BinaryCountMetric(_StreamingMetric):
@@ -651,6 +712,10 @@ class StreamingMSE(_StreamingMetric):
     ----------
     window : int or None, default=None
         Rolling window size in chunks.
+
+    Notes
+    -----
+    NaN when only empty chunks have been seen (or are in the window).
     """
 
     _numeric = True
@@ -659,7 +724,7 @@ class StreamingMSE(_StreamingMetric):
         return np.array([np.sum((y_true - y_pred) ** 2), y_true.size])
 
     def _compute(self, stats):
-        return float(stats[0] / stats[1])
+        return _safe_ratio(stats[0], stats[1])
 
 
 class StreamingConfusionMatrix(_StreamingMetric):
@@ -673,9 +738,12 @@ class StreamingConfusionMatrix(_StreamingMetric):
     Parameters
     ----------
     labels : array-like or None, default=None
-        Fixed label set. None learns labels from the data.
+        Fixed label set. None learns labels from the data. With a fixed
+        set, a chunk containing any other label raises ValueError instead
+        of silently dropping those samples.
     window : int or None, default=None
-        Rolling window size in chunks.
+        Rolling window size in chunks. Labels are never forgotten, so a
+        label seen only in an evicted chunk keeps a (zero) row and column.
 
     Attributes
     ----------
@@ -696,17 +764,53 @@ class StreamingConfusionMatrix(_StreamingMetric):
         return self
 
     def update(self, y_true_chunk, y_pred_chunk):
-        y_true, y_pred = _validate_pair(y_true_chunk, y_pred_chunk)
+        """
+        Add one chunk of true and predicted labels.
+
+        Parameters
+        ----------
+        y_true_chunk, y_pred_chunk : array-like of shape (n_samples,)
+            True and predicted labels. An empty chunk adds nothing.
+
+        Returns
+        -------
+        self
+
+        Raises
+        ------
+        ValueError
+            If the shapes differ, or a fixed label set is given and the
+            chunk contains a label outside it.
+
+        Notes
+        -----
+        Time complexity: O(n_samples * n_labels).
+        """
+        y_true, y_pred = _validate_pair(y_true_chunk, y_pred_chunk,
+                                        allow_empty=True)
         y_true, y_pred = y_true.ravel(), y_pred.ravel()
+        seen = np.unique(np.concatenate((y_true, y_pred)))
 
         if self._fixed_labels is None:
-            seen = np.unique(np.concatenate((y_true, y_pred)))
-            self.labels_ = (
-                seen if self.labels_.size == 0
-                else np.union1d(self.labels_, seen)
-            )
+            if seen.size:
+                self.labels_ = (
+                    seen if self.labels_.size == 0
+                    else np.union1d(self.labels_, seen)
+                )
+        else:
+            unknown = seen[~np.isin(seen, self._fixed_labels)]
+            if unknown.size:
+                raise ValueError(
+                    f"Found label(s) {unknown.tolist()} outside the fixed "
+                    f"labels {self._fixed_labels.tolist()}"
+                )
 
-        chunk = (self.labels_, confusion_matrix(y_true, y_pred, self.labels_))
+        size = self.labels_.size
+        if y_true.size == 0:
+            counts = np.zeros((size, size), dtype=int)
+        else:
+            counts = confusion_matrix(y_true, y_pred, self.labels_)
+        chunk = (self.labels_, counts)
 
         if self.window is None:
             self._total = chunk if self._total is None else (
@@ -737,14 +841,25 @@ class StreamingConfusionMatrix(_StreamingMetric):
         np.ndarray of shape (n_labels, n_labels)
             Integer counts over ``labels_``.
 
+        Raises
+        ------
+        NotFittedError
+            If ``update`` has not been called.
+
         Notes
         -----
         Time complexity: O(window * n_labels^2) with a window, otherwise
         O(n_labels^2).
         """
+        self._require_update()
         if self.window is None:
             return self._align(*self._total)
-        return sum(self._align(*chunk) for chunk in self._chunks)
+
+        size = self.labels_.size
+        total = np.zeros((size, size), dtype=int)
+        for chunk in self._chunks:
+            total += self._align(*chunk)
+        return total
 
 
 class StreamingAUC(_StreamingMetric):
@@ -767,6 +882,11 @@ class StreamingAUC(_StreamingMetric):
     -----
     ``update(y_true_chunk, y_score_chunk)`` takes scores or probabilities
     for the positive class as the second argument.
+
+    Early in a stream only one class may have been seen. ``result()`` then
+    returns NaN (AUC is undefined) instead of raising, so a streaming loop
+    can keep logging; it becomes a number once both classes are present.
+    ``roc_curve()`` raises ValueError in that situation.
     """
 
     def __init__(self, positive_label=1, window=None):
@@ -784,7 +904,35 @@ class StreamingAUC(_StreamingMetric):
         return unique, pos, neg
 
     def update(self, y_true_chunk, y_score_chunk):
-        chunk = _score_counts(y_true_chunk, y_score_chunk, self.positive_label)
+        """
+        Add one chunk of true labels and positive-class scores.
+
+        Parameters
+        ----------
+        y_true_chunk : array-like of shape (n_samples,)
+            True labels. An empty chunk adds nothing.
+        y_score_chunk : array-like of shape (n_samples,)
+            Real scores; higher means more likely positive. Infinite scores
+            are allowed.
+
+        Returns
+        -------
+        self
+
+        Raises
+        ------
+        TypeError
+            If the scores are not real numeric.
+        ValueError
+            If the shapes differ or a score is NaN.
+
+        Notes
+        -----
+        Time complexity: O((n + u) log(n + u)) for u distinct scores so far.
+        Space complexity: O(u).
+        """
+        chunk = _score_counts(y_true_chunk, y_score_chunk, self.positive_label,
+                              allow_empty=True)
 
         if self.window is None:
             self._total = chunk if self._total is None else self._merge(
@@ -798,6 +946,7 @@ class StreamingAUC(_StreamingMetric):
         return self
 
     def _current(self):
+        self._require_update()
         if self.window is None:
             return self._total
         merged = self._chunks[0]
@@ -814,6 +963,13 @@ class StreamingAUC(_StreamingMetric):
         fpr, tpr, thresholds : np.ndarray
             As for ``roc_curve``.
 
+        Raises
+        ------
+        NotFittedError
+            If ``update`` has not been called.
+        ValueError
+            If only one class has been seen.
+
         Notes
         -----
         Time complexity: O(u) for u distinct scores.
@@ -827,12 +983,21 @@ class StreamingAUC(_StreamingMetric):
         Returns
         -------
         float
+            AUC in [0, 1], or NaN while only one class has been seen.
+
+        Raises
+        ------
+        NotFittedError
+            If ``update`` has not been called.
 
         Notes
         -----
         Time complexity: O(u) for u distinct scores.
         """
-        fpr, tpr, _ = self.roc_curve()
+        scores, positives, negatives = self._current()
+        if not _has_both_classes(positives, negatives):
+            return float("nan")
+        fpr, tpr, _ = _roc_from_counts(scores, positives, negatives)
         return auc(fpr, tpr)
 
 

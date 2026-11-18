@@ -269,6 +269,8 @@ Precision, recall, and F1 use a specified positive class and are intended for bi
 `StreamingAccuracy`, `StreamingPrecision`, `StreamingRecall`, `StreamingF1`, `StreamingMSE`, `StreamingConfusionMatrix` and `StreamingAUC` all provide `update(y_true_chunk, y_pred_chunk)`, `result()` and `reset()`.
 - Pass `window=W` to any of them for a rolling metric over the last W chunks.
 - They store only per-chunk counts or sums, so results equal the one-shot function on all data seen. F1 is computed from summed counts, not by averaging per-chunk F1 scores.
+- `result()` before any `update` raises `NotFittedError`. Empty chunks are accepted. Accuracy and MSE over zero samples are NaN; precision, recall and F1 with a zero denominator are 0.0, as in the one-shot functions.
+- `StreamingAUC.result()` is NaN while only one class has been seen, and the one-shot `roc_curve`/`roc_auc_score` raise `ValueError` in that case. NaN scores are rejected; infinite scores are allowed.
 - The confusion matrix grows its label set as new labels appear.
 - `StreamingAUC` keeps positive and negative counts per distinct score, which is exact and small for tree leaf probabilities.
 
@@ -303,6 +305,10 @@ for chunk in read_csv_chunks("stream.csv", chunk_size=500):
 Fit preprocessing components on training data and reuse the fitted components to transform new data.
 
 **Transformer contract** (shared validation lives in `utils.py`):
+
+- `partial_fit` on an empty chunk does nothing, but `fit` on an empty batch raises `ValueError`.
+- `SimpleImputer` never leaves NaN: a column with no observed values yet uses `fill_value` (default 0.0) until real values arrive.
+- `OneHotEncoder` treats NaN as missing (an all-zero block), and raises `TypeError` if a column changes value type between chunks.
 
 - `X` must be 2D with shape `(n_samples, n_features)` and at least one sample. Scalers also require real, finite numbers (`TypeError` / `ValueError`).
 - `fit` records `n_features_in_` and returns `self`. `transform` raises `ValueError` if `X` has a different number of columns, instead of silently broadcasting.
@@ -499,7 +505,7 @@ python -m pytest
 
 ### Test results
 
-Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **597 passed, 0 failed** (about 3 seconds).
+Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **699 passed, 0 failed** (about 3 seconds).
 
 | Test file | Tests | What it verifies |
 |---|---:|---|
@@ -518,6 +524,7 @@ Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **597 passed, 0 faile
 | `test_utils.py` | 24 | Numeric validation, shape checks, safe division |
 | `test_optim.py` | 15 | Gradients and Jacobians |
 | `test_metrics.py` | 12 | Classification and regression metrics |
+| `test_streaming_edge_cases.py` | 102 | Empty chunks, use before fitting/updating, reset, constant columns across chunks, single-row chunks, imputer all-NaN columns and invalid `fill_value`, one-hot NaN and type changes, zero denominators, rolling windows of uneven chunks, fixed-label violations, single-class AUC, NaN/non-numeric/infinite scores, non-monotonic `auc` input; RuntimeWarnings fail the tests |
 | `test_metrics_streaming.py` | 38 | ROC/AUC vs. brute force with ties, streaming metrics equal batch metrics, growing confusion-matrix labels, AUC memory per distinct score, rolling windows, reset |
 | `test_pipeline.py` | 12 | Pipeline fit/transform/predict |
 | `test_stats.py` | 11 | Descriptive statistics |

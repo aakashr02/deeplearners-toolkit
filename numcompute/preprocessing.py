@@ -72,11 +72,14 @@ class _Transformer:
         return hasattr(self, "n_features_in_")
 
     def _validate_partial_fit_input(self, X):
+        # Empty chunks are allowed (streams can produce them); callers
+        # return early after the shape check without changing any state.
         return validate_2d(
             X,
             numeric=self._numeric,
             allow_nan=self._allow_nan,
             n_features=getattr(self, "n_features_in_", None),
+            allow_empty=True,
         )
 
     def _validate_transform_input(self, X):
@@ -97,14 +100,26 @@ class _Transformer:
         """
         Forget previous state and learn from ``X`` (batch use).
 
-        Equivalent to ``reset().partial_fit(X)``; see ``partial_fit``
-        for shapes, exceptions and complexity.
+        Equivalent to ``reset().partial_fit(X)``, except that ``X`` must
+        contain at least one sample: an empty chunk is a harmless no-op in
+        a stream, but an empty batch passed to ``fit`` is a caller error.
 
         Returns
         -------
         self
+
+        Raises
+        ------
+        ValueError
+            If X has no samples, plus everything ``partial_fit`` raises.
+
+        Notes
+        -----
+        Time and space complexity are those of one ``partial_fit`` call.
         """
-        return self.reset().partial_fit(X)
+        X_checked = validate_2d(X, numeric=self._numeric,
+                                allow_nan=self._allow_nan)
+        return self.reset().partial_fit(X_checked)
 
     def fit_transform(self, X, y=None):
         """
@@ -175,7 +190,7 @@ class StandardScaler(_Transformer):
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
-            Real, finite data with at least one sample. After the first
+            Real, finite data. An empty chunk is a no-op. After the first
             chunk, ``n_features`` must equal ``n_features_in_``.
         y : ignored
 
@@ -189,7 +204,7 @@ class StandardScaler(_Transformer):
         TypeError
             If X is not real numeric data.
         ValueError
-            If X is not 2D, has no samples, contains NaN/inf, or its column
+            If X is not 2D, contains NaN/inf, or its column
             count differs from earlier chunks.
 
         Notes
@@ -198,6 +213,8 @@ class StandardScaler(_Transformer):
         Space complexity: O(n_features), independent of stream length.
         """
         X = self._validate_partial_fit_input(X)
+        if X.shape[0] == 0:
+            return self
         self._stats.update_stats(X)
         self._record_chunk(X)
 
@@ -320,7 +337,7 @@ class MinMaxScaler(_Transformer):
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
-            Real, finite data with at least one sample.
+            Real, finite data. An empty chunk is a no-op.
         y : ignored
 
         Returns
@@ -333,7 +350,7 @@ class MinMaxScaler(_Transformer):
         TypeError
             If X is not real numeric data.
         ValueError
-            If X is not 2D, has no samples, contains NaN/inf, or its column
+            If X is not 2D, contains NaN/inf, or its column
             count differs from earlier chunks.
 
         Notes
@@ -342,6 +359,8 @@ class MinMaxScaler(_Transformer):
         Space complexity: O(n_features).
         """
         X = self._validate_partial_fit_input(X)
+        if X.shape[0] == 0:
+            return self
         chunk_min, chunk_max = X.min(axis=0), X.max(axis=0)
 
         if self._is_fitted():
@@ -417,14 +436,20 @@ class SimpleImputer(_Transformer):
           value.
         * "constant": always ``fill_value``.
     fill_value : float or None, default=None
-        Replacement used by the "constant" strategy (required for it).
+        Replacement used by the "constant" strategy (required for it). For
+        the other strategies it is the fallback for a feature that has had
+        no observed (non-NaN) value yet; None means a fallback of 0.0.
     max_centroids : int, default=512
         Memory bound for the "median" strategy.
 
     Attributes
     ----------
     statistics_ : np.ndarray of shape (n_features,)
-        Current replacement value for each feature.
+        Current replacement value for each feature. Always finite: a
+        feature with no observed values yet uses the fallback, and switches
+        to its real statistic as soon as values arrive.
+    n_observed_seen_ : np.ndarray of shape (n_features,)
+        Number of non-NaN values seen per feature.
     n_missing_seen_ : np.ndarray of shape (n_features,)
         Number of NaN values seen per feature during fitting.
     n_features_in_ : int
@@ -435,15 +460,15 @@ class SimpleImputer(_Transformer):
     Raises
     ------
     ValueError
-        If the strategy is unknown, or "constant" is used without a finite
-        ``fill_value``.
+        If the strategy is unknown, ``fill_value`` is given but is not a
+        finite real number, or "constant" is used without a ``fill_value``.
     """
 
     _STRATEGIES = ("mean", "median", "most_frequent", "constant")
     _fitted_attributes = ("statistics_", "n_features_in_")
     _state_attributes = (
-        "statistics_", "n_missing_seen_", "n_features_in_",
-        "n_samples_seen_",
+        "statistics_", "n_missing_seen_", "n_observed_seen_",
+        "n_features_in_", "n_samples_seen_",
     )
     _allow_nan = True
 
@@ -454,11 +479,17 @@ class SimpleImputer(_Transformer):
                 f"received {strategy!r}"
             )
 
-        if strategy == "constant":
-            if fill_value is None or not np.isfinite(fill_value):
+        if fill_value is not None:
+            is_real = isinstance(fill_value, (int, float, np.integer,
+                                              np.floating))
+            if (isinstance(fill_value, (bool, np.bool_)) or not is_real
+                    or not np.isfinite(fill_value)):
                 raise ValueError(
-                    "strategy='constant' requires a finite fill_value"
+                    f"fill_value must be a finite real number; "
+                    f"received {fill_value!r}"
                 )
+        elif strategy == "constant":
+            raise ValueError("strategy='constant' requires a fill_value")
 
         self.strategy = strategy
         self.fill_value = fill_value
@@ -527,7 +558,7 @@ class SimpleImputer(_Transformer):
         TypeError
             If X is not real numeric data.
         ValueError
-            If X is not 2D, has no samples, contains inf, or its column
+            If X is not 2D, contains inf, or its column
             count differs from earlier chunks.
 
         Notes
@@ -538,6 +569,8 @@ class SimpleImputer(_Transformer):
         Space complexity: O(d), O(K * d) and O(u * d) respectively.
         """
         X = self._validate_partial_fit_input(X)
+        if X.shape[0] == 0:
+            return self
         missing = np.isnan(X).sum(axis=0)
 
         if self.strategy == "mean":
@@ -551,8 +584,16 @@ class SimpleImputer(_Transformer):
             statistics = np.full(X.shape[1], float(self.fill_value))
 
         self._record_chunk(X)
-        self.statistics_ = np.atleast_1d(np.asarray(statistics, dtype=float))
         self.n_missing_seen_ = getattr(self, "n_missing_seen_", 0) + missing
+        self.n_observed_seen_ = (
+            getattr(self, "n_observed_seen_", 0) + (X.shape[0] - missing)
+        )
+
+        # A feature with no observed value yet has a NaN statistic; use the
+        # fallback so transform() never leaves NaN behind.
+        statistics = np.atleast_1d(np.asarray(statistics, dtype=float))
+        fallback = 0.0 if self.fill_value is None else float(self.fill_value)
+        self.statistics_ = np.where(np.isnan(statistics), fallback, statistics)
         return self
 
     def transform(self, X):
@@ -592,6 +633,38 @@ class SimpleImputer(_Transformer):
 # OneHotEncoder
 # ============================================================
 
+def _nan_mask(column):
+    """True where a float column is NaN (other dtypes have no NaN)."""
+    if column.dtype.kind == "f":
+        return np.isnan(column)
+    return np.zeros(column.shape, dtype=bool)
+
+
+def _drop_nan(column):
+    return column[~_nan_mask(column)]
+
+
+def _dtype_family(dtype):
+    """Coarse dtype family, so integers and strings never mix silently."""
+    if dtype.kind in "biuf":
+        return "numeric"
+    if dtype.kind in "US":
+        return "string"
+    return "object"
+
+
+def _check_same_family(categories, values, column_index):
+    """Reject a column whose values change type between chunks."""
+    if categories.size == 0 or values.size == 0:
+        return
+    known, received = _dtype_family(categories.dtype), _dtype_family(values.dtype)
+    if known != received:
+        raise TypeError(
+            f"Column {column_index} has {received} values, but its "
+            f"categories so far are {known} (type {categories.dtype}); "
+            "convert the column to one consistent type"
+        )
+
 class OneHotEncoder(_Transformer):
     """
     Encode categorical columns as one-hot indicator columns, learning the
@@ -623,6 +696,11 @@ class OneHotEncoder(_Transformer):
 
     Notes
     -----
+    NaN in a float column is treated as missing: it never becomes a
+    category and encodes as an all-zero block (not as "unknown").
+    A column whose values change type between chunks (e.g. integers, then
+    strings) raises TypeError rather than silently converting categories.
+
     Because the output width can grow during streaming, a model trained on
     earlier encoded chunks expects the earlier width. One Python loop runs
     over columns (each has its own categories); the work within a column
@@ -659,8 +737,8 @@ class OneHotEncoder(_Transformer):
         Raises
         ------
         ValueError
-            If X is not 2D, has no samples, or its column count differs
-            from earlier chunks.
+            If X is not 2D or its column count differs from earlier
+            chunks.
 
         Notes
         -----
@@ -669,16 +747,20 @@ class OneHotEncoder(_Transformer):
         Space complexity: O(C).
         """
         X = self._validate_partial_fit_input(X)
+        if X.shape[0] == 0:
+            return self
         previous = getattr(self, "categories_", None)
 
         categories = []
         for j, column in enumerate(X.T):
-            seen = np.unique(column)
+            seen = np.unique(_drop_nan(column))
             if previous is None:
                 categories.append(seen)
-            else:
-                fresh = seen[~np.isin(seen, previous[j])]
-                categories.append(np.concatenate((previous[j], fresh)))
+                continue
+
+            _check_same_family(previous[j], seen, j)
+            fresh = seen[~np.isin(seen, previous[j])]
+            categories.append(np.concatenate((previous[j], fresh)))
 
         self._record_chunk(X)
         self.categories_ = categories
@@ -719,10 +801,12 @@ class OneHotEncoder(_Transformer):
         for column_index, (col, cats) in enumerate(
             zip(X.T, self.categories_)
         ):
+            _check_same_family(cats, col, column_index)
             onehot = (col[:, None] == cats[None, :]).astype(int)
 
             if self.handle_unknown == "error":
-                unknown = ~onehot.any(axis=1)
+                # NaN means "missing" (an all-zero row), not an unknown value.
+                unknown = ~onehot.any(axis=1) & ~_nan_mask(col)
                 if np.any(unknown):
                     raise ValueError(
                         f"Found unknown categories "

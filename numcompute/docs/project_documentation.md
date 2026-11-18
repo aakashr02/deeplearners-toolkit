@@ -295,7 +295,7 @@ benchmark(python_loop, numpy_sum, data)
 - synthetic NumPy arrays with fixed random seeds
 
 ## Actual results
-Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **597 passed, 0 failed**.
+Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **699 passed, 0 failed**.
 
 | Area | Test files | Tests |
 |---|---|---:|
@@ -303,6 +303,7 @@ Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **597 passed, 0 failed**.
 | Ranking and percentiles | `test_rank.py`, `test_rank_vectorised.py`, `test_percentile.py` | 65 |
 | Utilities | `test_utils.py`, `test_utils_numerics.py` | 61 |
 | Preprocessing | `test_preprocessing.py`, `test_preprocessing_boundaries.py`, `test_preprocessing_streaming.py` | 83 |
+| Streaming edge cases (preprocessing and metrics) | `test_streaming_edge_cases.py` | 102 |
 | Cross-module contracts | `test_contracts.py` | 34 |
 | I/O | `test_io.py`, `test_io_chunks.py` | 21 |
 | Benchmarking | `test_benchmarking.py` | 21 |
@@ -322,6 +323,17 @@ Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **597 passed, 0 failed**.
 - Missing specified APIs (activations, distances, logsumexp, batching, chunked CSV input, `percentile` interpolation, `rank`/`topk`/`grad` names) → implemented and tested.
 - `histogram(..., ignore_nan=False)` silently ignored the flag and dropped NaN → now raises `ValueError`.
 - `gradient_batched`/`jacobian_batched` skipped all input validation → now share `gradient`/`jacobian` validation.
+- Streaming preprocessing and metrics edge-case pass (`test_streaming_edge_cases.py`; 59 of 98 tests failed on the first run):
+  - empty chunks were rejected and would stop a stream → `partial_fit`/`update` now treat them as no-ops, while `fit` still rejects an empty batch;
+  - `SimpleImputer` learned NaN for an all-NaN column and left NaN in its output → finite fallback;
+  - `SimpleImputer` gave a raw NumPy error for a string or Boolean `fill_value` → clear `ValueError`;
+  - `OneHotEncoder` learned NaN as a category, then treated NaN as unknown → NaN is now treated as missing;
+  - `OneHotEncoder` silently cast integer categories to strings when a later chunk contained text → `TypeError`;
+  - `result()` before any `update` crashed with `TypeError: 'NoneType'` → `NotFittedError`;
+  - a fixed-label confusion matrix silently dropped samples with unknown labels → `ValueError`;
+  - single-class AUC divided 0/0 with a RuntimeWarning → `ValueError` (one-shot) or NaN (streaming);
+  - NaN scores corrupted the ROC curve → rejected;
+  - `auc()` accepted a non-monotonic x and gave a negative area for decreasing x → both fixed.
 - `percentile([inf, inf], 50)` returned NaN because inf − inf = NaN in linear interpolation → returns the shared endpoint when both neighbours are equal.
 
 # 4. Benchmarking Strategy
