@@ -6,9 +6,8 @@ Run from the project root:
     python demo/make_stream_data.py
 
 The data comes from ``numcompute.benchmarking.make_stream_data``: 6,000
-rows, four sensor-like features and a binary label. The labelling rule
-changes halfway through (concept drift), 5% of labels are flipped, and 3%
-of feature values are missing (written as empty fields).
+rows, four sensor-like features and a binary label. 5% of labels are
+flipped and 3% of feature values are missing (written as empty fields).
 """
 
 import sys
@@ -30,7 +29,7 @@ def _format(value):
 
 
 def main():
-    X, y = make_stream_data(N_SAMPLES, n_features=4, drift_at=0.5,
+    X, y = make_stream_data(N_SAMPLES, n_features=4, drift_at=None,
                             missing_rate=0.03, label_noise=0.05, seed=2024)
 
     lines = ["sensor_1,sensor_2,sensor_3,sensor_4,label"]

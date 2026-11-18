@@ -318,7 +318,7 @@ Manages a model or pipeline over a stream: test-then-train evaluation, metric ac
   - **Tree `predict`:** `loop_tree_predict` walks one sample at a time.
   - **`RunningStats`:** `loop_running_stats` updates Welford's algorithm one value at a time.
 - Effect of `buffer_size` (`benchmark_buffer_sizes`): test-then-train accuracy (overall and after the drift), number of retrains, total and per-retrain time, first scored chunk, and peak memory.
-- `make_stream_data`: a reproducible synthetic stream with concept drift, label noise and optional missing values. It also generates `demo/stream_data.csv`.
+- `make_stream_data`: a reproducible synthetic stream with concept drift, label noise and optional missing values. It also generates `demo/stream_data.csv` (with drift disabled).
 - `environment_info`: platform, processor, Python and NumPy versions, printed with the results.
 
 ### Example
@@ -403,7 +403,6 @@ Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **877 passed, 0 failed**.
 
 ## Output
 - Tables printed by `python -m numcompute.benchmarking`, recorded in the README with the environment.
-- Plots in `demo/stream_demo.ipynb`.
 
 # 5. End‑to‑End Workflow (quickstart.ipynb)
 The demonstration notebook shows:
@@ -421,12 +420,9 @@ The demonstration notebook shows:
 This provides a complete walkthrough of the toolkit.
 
 ## Streaming demo (stream_demo.ipynb)
-- Loads `stream_data.csv` (6,000 rows, 3% missing values, concept drift halfway) with `read_csv` and streams it with `read_csv_chunks`.
-- Trains `SimpleImputer → StandardScaler → DecisionTreeClassifier(buffer_size=600)` chunk by chunk with `partial_fit`, via `StreamTrainer` (test-then-train).
-- Logs and plots per-chunk, rolling and cumulative accuracy, error rate and memory footprint.
-- Compares `buffer_size=200` vs `1500` with `compare_models`.
-- Shows predictions vs ground truth on the latest chunk, using predictions made before training on it.
-- Runs both streaming benchmarks and plots accuracy, retraining time and memory against `buffer_size`.
+- Loads `stream_data.csv` (6,000 rows, 3% missing values) with `read_csv` and streams it with `read_csv_chunks` in chunks of 200.
+- Trains `SimpleImputer → StandardScaler → DecisionTreeClassifier(buffer_size=600)` chunk by chunk with `partial_fit`, via `StreamTrainer` (test-then-train), and logs per-chunk accuracy, retrains and memory.
+- Plots cumulative accuracy and error rate over time, compares `buffer_size=200` vs `1500` with `compare_models`, and shows predictions vs ground truth on the latest chunk.
 
 # 6. Limitations
 - No GPU support

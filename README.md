@@ -430,7 +430,7 @@ Every function returns the matplotlib `Figure`.
 | Notebook | Shows |
 |---|---|
 | `demo/quickstart.ipynb` | Part 1 tour: CSV loading, preprocessing, statistics, sorting and searching, ranking, metrics, gradients, pipeline. |
-| `demo/stream_demo.ipynb` | Streaming: loads `demo/stream_data.csv` (6,000 rows, 3% missing values, concept drift) with `read_csv_chunks`; trains `SimpleImputer → StandardScaler → DecisionTreeClassifier` chunk by chunk with `partial_fit` via `StreamTrainer`; plots accuracy, error and memory over time, compares `buffer_size=200` vs `1500`, shows predictions vs ground truth on the latest chunk, and includes both benchmarks. |
+| `demo/stream_demo.ipynb` | Streaming: loads `demo/stream_data.csv` (6,000 rows, 3% missing values) with `read_csv` / `read_csv_chunks`; trains `SimpleImputer → StandardScaler → DecisionTreeClassifier` chunk by chunk with `partial_fit` via `StreamTrainer`; logs per-chunk metrics and memory; plots accuracy and error over time, compares `buffer_size=200` vs `1500`, and shows predictions vs ground truth on the latest chunk. |
 
 Regenerate the demo dataset with `python demo/make_stream_data.py`, then open the notebook from the `demo/` folder.
 
@@ -613,7 +613,6 @@ Absolute times vary between machines; the relative comparisons are what matter.
 - **Large buffers:** they retrain rarely, but each retrain is slower and the buffer holds more memory. They also react late to the drift; at 2,000, accuracy after the drift falls back to the level of the smallest buffer.
 - **The sweet spot:** about 500–1,000, roughly 5–10% of this stream. Peak memory has a floor of about 65 KB, which is the imputer's bounded median summary.
 
-`demo/stream_demo.ipynb` repeats the `buffer_size` experiment on the demo CSV and plots it.
 
 ## Testing
 
