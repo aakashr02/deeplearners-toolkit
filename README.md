@@ -16,6 +16,8 @@ The package is designed to offer useful numerical and data-processing operations
 - **Preprocessing:** Standard scaling, min-max scaling, and one-hot encoding.
 - **Pipelines:** Sequential preprocessing and optional final estimator integration, with streaming `partial_fit`.
 - **Decision tree:** `DecisionTreeClassifier` (Gini or entropy) with buffered streaming retraining.
+- **Stream training:** `StreamTrainer` runs test-then-train evaluation over chunks and logs per-chunk, cumulative and rolling metrics, memory footprint and timing.
+- **Visualisation:** matplotlib plots of metrics over time, model comparisons and predictions against ground truth.
 - **Input/output:** CSV loading into NumPy arrays, including chunked streaming and skip/fill handling of missing values.
 - **Utilities:** Numerically stable activations (sigmoid, softmax, log-softmax, logsumexp), distance functions and mini-batching.
 - **Percentiles:** `percentile()` with linear, lower, higher, midpoint and nearest interpolation.
@@ -41,6 +43,13 @@ python -m pip install "git+https://github.com/Sammie1875/deeplearners-toolkit.gi
 git clone https://github.com/Sammie1875/deeplearners-toolkit.git
 cd deeplearners-toolkit
 python -m pip install .
+```
+
+Plotting (`visualise.py`) needs matplotlib, which is an optional extra; the rest of the package needs only NumPy:
+
+```bash
+python -m pip install ".[viz]"     # matplotlib for plots
+python -m pip install ".[test]"    # pytest + matplotlib to run the tests
 ```
 
 For development, install in editable mode:
@@ -374,6 +383,48 @@ Every step must implement `partial_fit` for streaming; this is checked before an
 - **Stable classes:** `classes_` covers every label seen by `partial_fit`, so `predict_proba` columns stay stable even when a buffer lacks a class.
 - **Input checks:** NaN and infinity in X are rejected; impute missing values first.
 
+### 11. `stream.py` — Streaming training and logging
+
+| Class / function | Description |
+|---|---|
+| `StreamTrainer(model, metrics=("accuracy",), positive_label=1, window=None, track_peak_memory=False)` | Wraps any model with `partial_fit` and `predict` (a `Pipeline` or a tree). `metrics` can include `accuracy`, `precision`, `recall`, `f1`, `mse` and `auc`; accuracy is always logged. |
+| `score_chunk(X, y)` | Scores the current model on a chunk and updates the cumulative and rolling metrics. Metrics are NaN while the model cannot predict yet. |
+| `fit_chunk(X, y)` | `partial_fit`, recording fit time, whether the model retrained, the samples still buffered, and the memory footprint. |
+| `process_chunk(X, y)` (alias `partial_fit`) | Test-then-train: score the chunk, then train on it, and append a log entry to `history_`. |
+| `run(chunks)` | Processes every `(X_chunk, y_chunk)` pair. |
+| `get_metric(key)`, `summary()` | One logged value per chunk as an array, ready to plot; final totals. |
+| `estimate_memory(obj)` | Bytes held in NumPy arrays reachable from a model, buffers included. |
+
+Each chunk is scored by the model trained on earlier chunks before it is used for training. This prequential evaluation makes every chunk unseen test data, without a separate hold-out set.
+
+```python
+from numcompute import StreamTrainer
+
+trainer = StreamTrainer(pipe, metrics=("accuracy", "f1", "auc"), window=5)
+for X_chunk, y_chunk in stream:
+    trainer.process_chunk(X_chunk, y_chunk)
+
+trainer.get_metric("cumulative_accuracy")   # one value per chunk
+trainer.get_metric("memory_bytes")          # grows with the buffer, drops after a retrain
+trainer.summary()
+```
+
+### 12. `visualise.py` — Plots (matplotlib)
+
+| Function | Description |
+|---|---|
+| `plot_metric_over_time(metric_values, title, ylabel)` | A metric across chunks. |
+| `compare_models(metric1, metric2, labels)` | Two models on the same metric, e.g. trees with different `buffer_size`. |
+| `plot_predictions_vs_ground_truth(y_true, y_pred)` | Per-sample predictions with mistakes highlighted, plus a confusion matrix, for the latest chunk. |
+| `plot_stream_log(trainer_or_history, keys)` | Several `StreamTrainer` log keys on one set of axes. |
+
+Every function returns the matplotlib `Figure`.
+- `ax=` draws onto existing subplots.
+- `save_path=` saves the figure, with the format taken from the extension (.png, .pdf, .svg).
+- `show=True` calls `plt.show()`; in notebooks the returned figure displays inline.
+- NaN values, such as chunks before the first retrain, appear as gaps, and the chunk axis uses integer ticks.
+- matplotlib is imported only when a plot is drawn.
+
 ## Performance and complexity
 
 The following table gives theoretical or typical complexity estimates, rather than benchmark measurements. Actual performance depends on array dimensions, data types, NumPy's implementation, and the cost of user-supplied functions.
@@ -538,7 +589,7 @@ python -m pytest
 
 ### Test results
 
-Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **786 passed, 0 failed** (about 3 seconds).
+Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **849 passed, 0 failed** (about 3 seconds).
 
 | Test file | Tests | What it verifies |
 |---|---:|---|
@@ -561,6 +612,8 @@ Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **786 passed, 0 faile
 | `test_metrics_streaming.py` | 38 | ROC/AUC vs. brute force with ties, streaming metrics equal batch metrics, growing confusion-matrix labels, AUC memory per distinct score, rolling windows, reset |
 | `test_pipeline.py` | 12 | Pipeline fit/transform/predict |
 | `test_pipeline_streaming.py` | 18 | `partial_fit` equals manual chaining, imputer → scaler → tree streams, `predict_proba`, empty chunks, predicting before the tree retrains, missing `partial_fit`, feature-count changes, one-hot width growth |
+| `test_stream.py` | 32 | Test-then-train ordering, cumulative accuracy equals manual test-then-train, rolling windows, retrain/buffer/memory logging, peak memory, AUC (including single-class chunks), empty chunks, invalid configuration, `estimate_memory` (containers, cycles, object arrays) |
+| `test_visualise.py` | 31 | Figures and line data, NaN gaps, integer chunk ticks, drawing on given axes, saving PNG/SVG/PDF, `show`, invalid input, model comparison labels, confusion-matrix counts, string labels, `max_points`, `StreamTrainer` log plots (headless Agg backend) |
 | `test_tree.py` | 69 | Root split vs. exhaustive loop search (Gini and entropy), perfect fit, depth and `min_samples_split` limits, single-class, constant and conflicting data, adjacent floats, ±1e308 values, 1,500-leaf tree, `max_features` options, invalid input, buffered retraining (timing, clearing, buffer-only data, oversized chunks, stable classes, new classes) |
 | `test_stats.py` | 11 | Descriptive statistics |
 | `test_stats_streaming.py` | 88 | Streaming stats match one-shot results for any chunking (incl. empty/1-row chunks), 1e9-offset stability, constant and all-NaN features, ddof edge cases, merge, windows, NumPy histogram/quantile parity, bounded-memory sketch accuracy and memory bound, no RuntimeWarnings |

@@ -62,7 +62,14 @@ from numcompute.stats import (
     update_stats,
     variance,
 )
+from numcompute.stream import StreamTrainer, estimate_memory
 from numcompute.tree import DecisionTreeClassifier
+from numcompute.visualise import (
+    compare_models,
+    plot_metric_over_time,
+    plot_predictions_vs_ground_truth,
+    plot_stream_log,
+)
 from numcompute.utils import (
     NotFittedError,
     batch_iterator,
@@ -143,6 +150,14 @@ __all__ = [
     "Pipeline",
     # tree
     "DecisionTreeClassifier",
+    # stream
+    "StreamTrainer",
+    "estimate_memory",
+    # visualise (matplotlib is imported only when a plot is drawn)
+    "plot_metric_over_time",
+    "compare_models",
+    "plot_predictions_vs_ground_truth",
+    "plot_stream_log",
     # utils
     "NotFittedError",
     "safe_divide",

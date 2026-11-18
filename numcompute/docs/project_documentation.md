@@ -265,6 +265,25 @@ The thresholds are midpoints computed as `low/2 + high/2`, which cannot overflow
 ### Buffered retraining (`partial_fit`)
 Chunks are appended to a buffer. When the buffer holds at least `buffer_size` samples, the tree is rebuilt on the buffer only, and the buffer is cleared. `predict` keeps using the last tree between retrains. `classes_` is the union of all labels seen, so probability columns stay stable. `fit` starts from scratch and clears the buffer.
 
+## 2.8c stream.py — StreamTrainer
+### Purpose
+Manages a model or pipeline over a stream: test-then-train evaluation, metric accumulation and logging.
+
+### Design
+- `process_chunk` calls `score_chunk` (predict with the current model, then update the streaming metric objects) and then `fit_chunk` (`partial_fit`). Each chunk is therefore evaluated as unseen data.
+- While the model cannot predict (for example, a tree whose buffer has not filled), `predict` raises `NotFittedError`. The trainer catches it, logs NaN and leaves the accumulators unchanged.
+- Metrics:
+  - per-chunk metrics use the one-shot functions;
+  - cumulative and rolling metrics use the `Streaming*` classes from `metrics.py`;
+  - AUC uses `predict_proba` and returns NaN, without a warning, on single-class chunks.
+- The memory footprint (`estimate_memory`) walks the model's attributes and containers, following each object once, and sums `ndarray.nbytes`. This measures what the model holds, including its training buffer, and is deterministic. `track_peak_memory=True` also records the `tracemalloc` peak allocated during training.
+- Each log entry records the chunk index, sample count, whether the chunk was scored, predict and fit times, whether the model retrained, the samples still buffered, the memory, and the chunk, cumulative and rolling metrics.
+
+## 2.8d visualise.py — Plotting
+- Functions: `plot_metric_over_time`, `compare_models`, `plot_predictions_vs_ground_truth`, `plot_stream_log`.
+- They use matplotlib's object-oriented API, accept an optional `ax`, `save_path`, `show` and `dpi`, and return the `Figure`. This makes them reusable in scripts, notebooks and tests (the tests use the headless Agg backend).
+- matplotlib is imported lazily, so it is an optional dependency (`pip install .[viz]`).
+
 ## 2.9 utils.py — Shared Utilities
 ### Purpose
 - Provides helper functions used across modules.
@@ -317,7 +336,7 @@ benchmark(python_loop, numpy_sum, data)
 - synthetic NumPy arrays with fixed random seeds
 
 ## Actual results
-Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **786 passed, 0 failed**.
+Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **849 passed, 0 failed**.
 
 | Area | Test files | Tests |
 |---|---|---:|
@@ -334,6 +353,8 @@ Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **786 passed, 0 failed**.
 | Metrics | `test_metrics.py`, `test_metrics_streaming.py` | 50 |
 | Pipeline | `test_pipeline.py`, `test_pipeline_streaming.py` | 30 |
 | Decision tree | `test_tree.py` | 69 |
+| Stream training | `test_stream.py` | 32 |
+| Visualisation | `test_visualise.py` | 31 |
 | Statistics | `test_stats.py`, `test_stats_streaming.py` | 99 |
 
 ## Corrections driven by testing
