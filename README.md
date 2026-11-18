@@ -598,20 +598,20 @@ Absolute times vary between machines; the relative comparisons are what matter.
 
 ### Effect of `buffer_size`
 
-10,000 samples were streamed in 100 chunks of 100 through `SimpleImputer → StandardScaler → DecisionTreeClassifier(max_depth=6)`. The concept drifts at 50%. Accuracy is test-then-train, so each chunk is scored before the model trains on it.
+10,000 samples were streamed in 100 chunks of 100 through `SimpleImputer → StandardScaler → DecisionTreeClassifier(max_depth=6)`. 3% of feature values are missing. Accuracy is test-then-train, so each chunk is scored before the model trains on it.
 
-| `buffer_size` | Accuracy | Accuracy after drift | Retrains | Total retrain time (ms) | Time per retrain (ms) | Peak memory (KB) |
+| `buffer_size` | Accuracy | First scored chunk | Retrains | Total retrain time (ms) | Time per retrain (ms) | Peak memory (KB) |
 |---:|---:|---:|---:|---:|---:|---:|
-| 100 | 0.821 | 0.817 | 100 | 512.2 | 5.1 | 65.5 |
-| 250 | 0.854 | 0.843 | 33 | 308.7 | 9.4 | 70.6 |
-| 500 | 0.869 | 0.853 | 20 | 237.5 | 11.9 | 81.5 |
-| 1000 | **0.875** | 0.851 | 10 | 190.4 | 19.0 | 96.3 |
-| 2000 | 0.853 | 0.817 | 5 | 148.4 | 29.7 | 131.4 |
+| 100 | 0.809 | 1 | 100 | 517.9 | 5.2 | 65.2 |
+| 250 | 0.847 | 3 | 33 | 307.3 | 9.3 | 69.9 |
+| 500 | 0.868 | 5 | 20 | 260.4 | 13.0 | 80.2 |
+| 1000 | 0.887 | 10 | 10 | 187.0 | 18.7 | 95.2 |
+| 2000 | **0.903** | 20 | 5 | 127.5 | 25.5 | 130.7 |
 
 **Observations:**
 - **Small buffers:** they retrain constantly on little data, so each tree is weaker. They also cost the most total retraining time, because the per-retrain overhead is paid 100 times.
-- **Large buffers:** they retrain rarely, but each retrain is slower and the buffer holds more memory. They also react late to the drift; at 2,000, accuracy after the drift falls back to the level of the smallest buffer.
-- **The sweet spot:** about 500–1,000, roughly 5–10% of this stream. Peak memory has a floor of about 65 KB, which is the imputer's bounded median summary.
+- **Large buffers:** each tree learns from more data, so accuracy rises from 0.809 to 0.903 and total retraining time falls. The costs are that each retrain is slower, peak memory doubles, and no prediction is possible until the first buffer fills (chunk 20 at size 2,000).
+- **The choice** therefore depends on how soon predictions are needed and how much memory is available. Peak memory has a floor of about 65 KB, which is the imputer's bounded median summary.
 
 
 ## Testing

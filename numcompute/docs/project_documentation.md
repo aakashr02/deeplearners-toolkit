@@ -317,7 +317,7 @@ Manages a model or pipeline over a stream: test-then-train evaluation, metric ac
   - **Tree `partial_fit`:** `LoopDecisionTreeClassifier` overrides only `_best_split` with Python loops. It visits candidates in the same order with the same arithmetic, so both trees are identical, which is asserted before timing.
   - **Tree `predict`:** `loop_tree_predict` walks one sample at a time.
   - **`RunningStats`:** `loop_running_stats` updates Welford's algorithm one value at a time.
-- Effect of `buffer_size` (`benchmark_buffer_sizes`): test-then-train accuracy (overall and after the drift), number of retrains, total and per-retrain time, first scored chunk, and peak memory.
+- Effect of `buffer_size` (`benchmark_buffer_sizes`): test-then-train accuracy, number of retrains, total and per-retrain time, first scored chunk, and peak memory.
 - `make_stream_data`: a reproducible synthetic stream with concept drift, label noise and optional missing values. It also generates `demo/stream_data.csv` (with drift disabled).
 - `environment_info`: platform, processor, Python and NumPy versions, printed with the results.
 
@@ -399,7 +399,7 @@ Run on Python 3.9.6, NumPy 1.26.0, pytest 7.4.3: **877 passed, 0 failed**.
 
 ## Streaming
 - Loop-based vs vectorised implementations of the tree's split search (under `partial_fit`), tree prediction and running statistics.
-- Different `buffer_size` values on the same drifting stream: accuracy, retraining time and memory.
+- Different `buffer_size` values on the same stream: accuracy, retraining time and memory.
 
 ## Output
 - Tables printed by `python -m numcompute.benchmarking`, recorded in the README with the environment.
@@ -428,11 +428,11 @@ This provides a complete walkthrough of the toolkit.
 - No GPU support
 - No external ML libraries
 - No automatic hyperparameter tuning
-- Basic metrics only
+- Each retrain uses only the buffered samples; older data is discarded
 - Educational focus, not production‑grade
 
 # 7. Future Improvements
-- ROC/AUC
+- Sliding or reservoir buffer that keeps part of the earlier data
 - More preprocessing utilities
 - More metrics
 - CI/CD (GitHub Actions)

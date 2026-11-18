@@ -736,8 +736,8 @@ def benchmark_buffer_sizes(buffer_sizes=(100, 250, 500, 1000, 2000), X=None,
     buffer_sizes : sequence of int
         Values to compare.
     X, y : array-like or None
-        Stream to use. None generates ``make_stream_data(n_samples)``,
-        which drifts halfway through.
+        Stream to use. None generates ``make_stream_data(n_samples)``
+        without drift and with 3% missing feature values.
     chunk_size : int, default=100
         Rows per chunk.
     max_depth : int, default=6
@@ -749,8 +749,7 @@ def benchmark_buffer_sizes(buffer_sizes=(100, 250, 500, 1000, 2000), X=None,
     -------
     list of dict
         One per buffer size with ``buffer_size``, ``accuracy`` (cumulative
-        test-then-train accuracy), ``accuracy_after_drift`` (on chunks in
-        the second half of the stream), ``n_retrains``,
+        test-then-train accuracy), ``n_retrains``,
         ``total_retrain_time``, ``mean_retrain_time`` (seconds),
         ``first_scored_chunk``, ``peak_memory_bytes`` and
         ``chunk_accuracy`` (array, for plotting).
@@ -772,13 +771,13 @@ def benchmark_buffer_sizes(buffer_sizes=(100, 250, 500, 1000, 2000), X=None,
     chunk_size = validate_int(chunk_size, "chunk_size", minimum=1)
 
     if X is None:
-        X, y = make_stream_data(n_samples, seed=42)
+        X, y = make_stream_data(n_samples, drift_at=None, missing_rate=0.03,
+                                seed=42)
     X, y = np.asarray(X, dtype=float), np.asarray(y)
     if X.ndim != 2 or len(X) != len(y):
         raise ValueError("X must be 2D with one label per row")
 
     chunks = _chunked(X, y, chunk_size)
-    second_half = len(chunks) // 2
     results = []
 
     for buffer_size in buffer_sizes:
@@ -793,23 +792,13 @@ def benchmark_buffer_sizes(buffer_sizes=(100, 250, 500, 1000, 2000), X=None,
         retrained = trainer.get_metric("retrained").astype(bool)
         fit_times = trainer.get_metric("fit_time")
         chunk_acc = trainer.get_metric("chunk_accuracy")
-        sizes = trainer.get_metric("n_samples")
         scored = np.flatnonzero(trainer.get_metric("scored").astype(bool))
-
-        late = np.arange(len(chunks)) >= second_half
-        late_scored = late & ~np.isnan(chunk_acc)
-        after_drift = (
-            float(np.sum(chunk_acc[late_scored] * sizes[late_scored])
-                  / np.sum(sizes[late_scored]))
-            if np.any(late_scored) else float("nan")
-        )
 
         n_retrains = int(retrained.sum())
         total_retrain = float(fit_times[retrained].sum())
         results.append({
             "buffer_size": buffer_size,
             "accuracy": trainer.summary()["cumulative_accuracy"],
-            "accuracy_after_drift": after_drift,
             "n_retrains": n_retrains,
             "total_retrain_time": total_retrain,
             "mean_retrain_time": (total_retrain / n_retrains
@@ -890,8 +879,8 @@ def run_streaming_benchmarks(repeats=3, buffer_sizes=(100, 250, 500, 1000,
               f"{result['speedup']:>13.1f}x")
 
     print("\n(b) Effect of buffer_size (10,000 samples, 100 chunks of 100, "
-          "concept drift at 50%)")
-    print(f"{'buffer':>8}{'accuracy':>10}{'after drift':>13}{'retrains':>10}"
+          "3% missing values)")
+    print(f"{'buffer':>8}{'accuracy':>10}{'first scored':>14}{'retrains':>10}"
           f"{'retrain total (ms)':>20}{'per retrain (ms)':>18}"
           f"{'peak memory (KB)':>18}")
     print("-" * 97)
@@ -899,7 +888,7 @@ def run_streaming_benchmarks(repeats=3, buffer_sizes=(100, 250, 500, 1000,
     buffers = benchmark_buffer_sizes(buffer_sizes)
     for r in buffers:
         print(f"{r['buffer_size']:>8}{r['accuracy']:>10.3f}"
-              f"{r['accuracy_after_drift']:>13.3f}{r['n_retrains']:>10}"
+              f"{str(r['first_scored_chunk']):>14}{r['n_retrains']:>10}"
               f"{r['total_retrain_time'] * 1000:>20.1f}"
               f"{r['mean_retrain_time'] * 1000:>18.2f}"
               f"{r['peak_memory_bytes'] / 1024:>18.1f}")
