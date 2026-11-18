@@ -421,8 +421,8 @@ This provides a complete walkthrough of the toolkit.
 
 ## Streaming demo (stream_demo.ipynb)
 - Loads `stream_data.csv` (6,000 rows, 3% missing values) with `read_csv` and streams it with `read_csv_chunks` in chunks of 200.
-- Trains `SimpleImputer → StandardScaler → DecisionTreeClassifier(buffer_size=600)` chunk by chunk with `partial_fit`, via `StreamTrainer` (test-then-train), and logs per-chunk accuracy, retrains and memory.
-- Plots cumulative accuracy and error rate over time, compares `buffer_size=200` vs `1500` with `compare_models`, and shows predictions vs ground truth on the latest chunk.
+- Trains `SimpleImputer → StandardScaler → DecisionTreeClassifier(buffer_size=600)` chunk by chunk with `partial_fit`, via `StreamTrainer` (test-then-train), and logs per-chunk, rolling (last 5 chunks) and cumulative accuracy, F1, AUC, retrains and memory.
+- Plots per-chunk, rolling and cumulative accuracy, error rate and memory over time, compares `buffer_size=200` vs `1500` on rolling accuracy with `compare_models`, and shows predictions vs ground truth on the latest chunk.
 
 # 6. Limitations
 - No GPU support

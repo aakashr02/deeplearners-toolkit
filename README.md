@@ -430,7 +430,7 @@ Every function returns the matplotlib `Figure`.
 | Notebook | Shows |
 |---|---|
 | `demo/quickstart.ipynb` | Part 1 tour: CSV loading, preprocessing, statistics, sorting and searching, ranking, metrics, gradients, pipeline. |
-| `demo/stream_demo.ipynb` | Streaming: loads `demo/stream_data.csv` (6,000 rows, 3% missing values) with `read_csv` / `read_csv_chunks`; trains `SimpleImputer → StandardScaler → DecisionTreeClassifier` chunk by chunk with `partial_fit` via `StreamTrainer`; logs per-chunk metrics and memory; plots accuracy and error over time, compares `buffer_size=200` vs `1500`, and shows predictions vs ground truth on the latest chunk. |
+| `demo/stream_demo.ipynb` | Streaming: loads `demo/stream_data.csv` (6,000 rows, 3% missing values) with `read_csv` / `read_csv_chunks`; trains `SimpleImputer → StandardScaler → DecisionTreeClassifier` chunk by chunk with `partial_fit` via `StreamTrainer`; logs per-chunk, rolling and cumulative metrics and memory; plots accuracy, error and memory over time, compares `buffer_size=200` vs `1500` on rolling accuracy, and shows predictions vs ground truth on the latest chunk. |
 
 Regenerate the demo dataset with `python demo/make_stream_data.py`, then open the notebook from the `demo/` folder.
 
@@ -654,12 +654,3 @@ Measured with Python 3.9.6, NumPy 1.26.0 and pytest 7.4.3: **877 passed, 0 faile
 | `test_stats_streaming.py` | 88 | Streaming stats match one-shot results for any chunking (incl. empty/1-row chunks), 1e9-offset stability, constant and all-NaN features, ddof edge cases, merge, windows, NumPy histogram/quantile parity, bounded-memory sketch accuracy and memory bound, no RuntimeWarnings |
 | `test_stats_optim_contracts.py` | 64 | Stats input contract (empty, non-numeric, axis bounds, all-NaN slices without warnings, all-equal, strided views, histogram NaN policy, quantile q range) and batched gradient/Jacobian validation |
 | `test_io.py` | 1 | CSV loading |
-
-## Team Work Split
-
-| Team Member | Tasks Done |
-|---|---|
-| Sameena Shafiulla Khan | Setup the initial git repo. Implemented `io.py` (CSV/data loading) and `preprocessing.py` (`StandardScaler`, `MinMaxScaler`, `OneHotEncoder`); wrote unit tests for both modules; contributed to README and documentation. |
-| Veeksha Nakka | Implemented `stats.py` (statistical functions and NaN handling), `metrics.py` (classification and regression metrics), and `benchmarking.py`; wrote unit tests for these modules and prepared benchmark results. |
-| Krishna Kumar Siraimeetan | Implemented `rank.py` (ranking methods, tie handling, and percentiles) and `utils.py`; wrote unit tests for these modules and created `demo/quickstart.ipynb` after module integration. |
-| Aakash Rajan | Implemented `sort_search.py` (sorting, searching, Top-K, and quickselect), `optim.py` (finite-difference gradients and Jacobians), and `pipeline.py`; wrote unit tests for these modules. Contributed to final integration and package setup, README, documentation and demo video |
